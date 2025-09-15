@@ -55,6 +55,7 @@ from isaacgymenvs.utils import torch_jit_utils
 import matplotlib.pyplot as plt
 import isaacgymenvs.tasks.factory.factory_control as fc
 from concurrent.futures import ThreadPoolExecutor
+import math 
 
 def quat_to_matrix(q):
     """Convert Isaac Gym gymapi.Quat to 3x3 rotation matrix"""
@@ -139,15 +140,20 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         cam_props.enable_tensors = True
         for env_ptr in self.env_ptrs:
             env_cameras = {}
+            theta_deg = 120   # example: tilt downward 45°
+            theta_rad = math.radians(theta_deg) 
             offset = gymapi.Transform(
-                p=gymapi.Vec3(0.01, 0.0, -0.1),  # 5cm above the link
-                r=gymapi.Quat.from_euler_zyx(0, -1.57, 0)  # tilt downward 90°
+                p=gymapi.Vec3(0.00, 0.0, 0.0),
+                r=gymapi.Quat.from_euler_zyx(0, -theta_rad, 0)  # tilt downward by theta_deg
             )
+            # offset = gymapi.Transform(
+            #     p=gymapi.Vec3(0.00, 0.0, 0),  # 5cm above the link
+            #     r=gymapi.Quat.from_euler_zyx(0, -1.57, 0)  # tilt downward 90°
+            # )
             cam_handle_panda=self.gym.create_camera_sensor(env_ptr,cam_props)
             # self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,gymapi.Transform(),gymapi.FOLLOW_TRANSFORM)
             self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,offset,gymapi.FOLLOW_TRANSFORM)
             env_cameras["panda"]=cam_handle_panda
-            # import pdb;pdb.set_trace()
             # self.gym.prepare_sim(self.sim)
             # self.gym.simulate(self.sim)
             # self.gym.fetch_results(self.sim,True)
@@ -155,6 +161,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # self.gym.render_all_camera_sensors(self.sim)
             # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_panda, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
             # imageio.imwrite("panda_camera.png", color_image)
+            # import pdb;pdb.set_trace()
     
             # --- Top view (slightly shifted, higher)
             cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
@@ -164,7 +171,14 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 gymapi.Vec3(0, 0, 0.7)                                 # look at target
             )
             env_cameras["top"] = cam_handle_top
-
+            # self.gym.prepare_sim(self.sim)
+            # self.gym.simulate(self.sim)
+            # self.gym.fetch_results(self.sim,True)
+            # self.gym.step_graphics(self.sim)
+            # self.gym.render_all_camera_sensors(self.sim)
+            # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_top, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
+            # imageio.imwrite("panda_camera.png", color_image)
+            # import pdb;pdb.set_trace()
             # --- Bottom view (angled from below)
             cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
             self.gym.set_camera_location(
@@ -173,7 +187,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
             )
             env_cameras["bottom"] = cam_handle_bottom
-
             # import pdb;pdb.set_trace()
             # cam_pose_top=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_top)
             # cam_pose_bottom=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_bottom)
@@ -374,14 +387,63 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         cam_target = gymapi.Vec3(0.0, 0.0, 0.5)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
+    def quat_slerp(self,q0, q1, alpha):
+        """
+        Spherical linear interpolation (slerp) between two quaternions q0 and q1.
+        q0, q1: [N, 4] (w, x, y, z) format
+        alpha: float in [0,1] or tensor broadcastable to [N, 1]
+        """
+        # Normalize to be safe
+        q0 = q0 / q0.norm(dim=-1, keepdim=True)
+        q1 = q1 / q1.norm(dim=-1, keepdim=True)
+
+        # Compute cosine of angle
+        dot = (q0 * q1).sum(-1, keepdim=True)
+
+        # If negative dot, negate one quaternion to take shorter path
+        q1 = torch.where(dot < 0.0, -q1, q1)
+        dot = torch.abs(dot)
+
+        DOT_THRESHOLD = 0.9995
+        if torch.all(dot > DOT_THRESHOLD):
+            # Nearly identical → use linear interpolation
+            result = q0 + alpha * (q1 - q0)
+            return result / result.norm(dim=-1, keepdim=True)
+
+        # Compute angle between them
+        theta_0 = torch.acos(dot)        # angle between input vectors
+        theta = theta_0 * alpha          # angle between q0 and result
+
+        sin_theta_0 = torch.sin(theta_0)
+        sin_theta = torch.sin(theta)
+
+        s0 = torch.cos(theta) - dot * sin_theta / sin_theta_0
+        s1 = sin_theta / sin_theta_0
+
+        return (s0 * q0) + (s1 * q1)
+
     def _move_gripper_to_eef_pose(self, env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper):
-        """Move end-effector to a given pose specifed by (ctrl_tgt_pos, ctrl_tgt_quat)."""
+        """Move end-effector smoothly along a straight-line trajectory to target pose."""
 
-        self.ctrl_target_fingertip_centered_pos[env_ids] = ctrl_tgt_pos[env_ids]
-        self.ctrl_target_fingertip_centered_quat[env_ids] = ctrl_tgt_quat[env_ids]
+        # ---- Step 1: Record starting pose ----
+        start_pos = self.fingertip_centered_pos.clone()
+        start_quat = self.fingertip_centered_quat.clone()
 
-        # Step sim and render
-        for _ in range(sim_steps):
+        # ---- Step 2: Interpolate trajectory over sim_steps ----
+        for t in range(sim_steps):
+            alpha = (t + 1) / sim_steps  # goes from 0 → 1
+
+            # Linear interpolation for position
+            interp_pos = (1 - alpha) * start_pos + alpha * ctrl_tgt_pos
+
+            # Spherical linear interpolation (slerp) for rotation
+            interp_quat = self.quat_slerp(start_quat, ctrl_tgt_quat, alpha)
+
+            # Update control targets
+            self.ctrl_target_fingertip_centered_pos[env_ids] = interp_pos[env_ids]
+            self.ctrl_target_fingertip_centered_quat[env_ids] = interp_quat[env_ids]
+
+            # ---- Step sim and logging ----
             self.refresh_base_tensors()
             self.refresh_env_tensors()
             self._refresh_task_tensors()
@@ -389,6 +451,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             if if_log:
                 self._log_robot_state_per_timestep()
 
+            # Compute error relative to interpolated pose
             pos_error, axis_angle_error = fc.get_pose_error(
                 fingertip_midpoint_pos=self.fingertip_centered_pos,
                 fingertip_midpoint_quat=self.fingertip_centered_quat,
@@ -397,10 +460,12 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 jacobian_type=self.cfg_ctrl['jacobian_type'],
                 rot_error_type='axis_angle')
 
+            # Form action from error
             delta_hand_pose = torch.cat((pos_error, axis_angle_error), dim=-1)
             actions = torch.zeros((self.num_envs, self.cfg_task.env.numActions), device=self.device)
             actions[env_ids, :6] = delta_hand_pose[env_ids]
 
+            # Control gripper open/close
             if close_gripper:
                 self._apply_actions_as_ctrl_targets(actions=actions,
                                                     ctrl_target_gripper_dof_pos=0.0,
@@ -410,11 +475,23 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                                     ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
                                                     do_scale=False)
 
+            # Step simulation
             self.gym.simulate(self.sim)
+            # if close_gripper:
+            #     self._apply_actions_as_ctrl_targets(actions=actions,
+            #                                         ctrl_target_gripper_dof_pos=0.0,
+            #                                         do_scale=False)
+            # else:
+            #     self._apply_actions_as_ctrl_targets(actions=actions,
+            #                                         ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
+            #                                         do_scale=False)
+
+            # self.gym.simulate(self.sim)
             if if_log:
-                self.gym.fetch_results(self.sim,True)
+                self.gym.fetch_results(self.sim,False)
                 self.gym.step_graphics(self.sim)
                 self.gym.render_all_camera_sensors(self.sim)
+                self.gym.start_access_image_tensors(self.sim)
 
                 def fetch_image(env_id, cam_handle, cam_type, height, width):
                     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
@@ -475,7 +552,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
                 self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
                 self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
-                
+                self.gym.end_access_image_tensors(self.sim)
+                # imageio.imwrite("camera_top.png", self.camera1_rgb_traj[0][0].astype(np.uint8))
+                # import pdb;pdb.set_trace()
                 print(f"Collect Image {len(self.camera1_depth_traj)}")
 
 
@@ -537,34 +616,65 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                         if_log=True, 
                                         close_gripper=True)
 
-    def _randomize_gripper_pose(self, env_ids, sim_steps, if_log, close_gripper):
-        """Move gripper to random pose."""
+    # def _randomize_gripper_pose(self, env_ids, sim_steps, if_log, close_gripper):
+    #     """Move gripper to random pose."""
 
+    #     ctrl_tgt_pos = torch.empty_like(self.plug_grasp_pos).copy_(self.plug_grasp_pos)
+    #     ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset
+
+    #     fingertip_centered_pos_noise = \
+    #         2 * (torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
+    #     fingertip_centered_pos_noise = \
+    #         fingertip_centered_pos_noise @ torch.diag(torch.tensor(self.cfg_task.randomize.gripper_rand_pos_noise,
+    #                                                                device=self.device))
+    #     ctrl_tgt_pos += fingertip_centered_pos_noise
+
+    #     # Set target rot
+    #     ctrl_target_fingertip_centered_euler = torch.tensor(self.cfg_task.randomize.fingertip_centered_rot_initial,
+    #                                                         device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
+
+    #     fingertip_centered_rot_noise = \
+    #         2 * (torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
+    #     fingertip_centered_rot_noise = fingertip_centered_rot_noise @ torch.diag(
+    #         torch.tensor(self.cfg_task.randomize.gripper_rand_rot_noise, device=self.device))
+    #     ctrl_target_fingertip_centered_euler += fingertip_centered_rot_noise
+    #     ctrl_tgt_quat = torch_utils.quat_from_euler_xyz(
+    #         ctrl_target_fingertip_centered_euler[:, 0],
+    #         ctrl_target_fingertip_centered_euler[:, 1],
+    #         ctrl_target_fingertip_centered_euler[:, 2])
+
+    #     self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
+
+    def _randomize_gripper_pose(self, env_ids, sim_steps, if_log, close_gripper):
+        """Move gripper to a random target pose with smooth motion (no per-step noise)."""
+
+        # ---- Step 1: Randomize target position ----
         ctrl_tgt_pos = torch.empty_like(self.plug_grasp_pos).copy_(self.plug_grasp_pos)
         ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset
+        # Sample random offset ONCE (no per-step jitter)
+        rand_pos_offset = (2 * torch.rand((self.num_envs, 3), device=self.device) - 1.0)
+        rand_pos_offset = rand_pos_offset @ torch.diag(
+            torch.tensor(self.cfg_task.randomize.gripper_rand_pos_noise, device=self.device)
+        )
+        ctrl_tgt_pos += rand_pos_offset
 
-        fingertip_centered_pos_noise = \
-            2 * (torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
-        fingertip_centered_pos_noise = \
-            fingertip_centered_pos_noise @ torch.diag(torch.tensor(self.cfg_task.randomize.gripper_rand_pos_noise,
-                                                                   device=self.device))
-        ctrl_tgt_pos += fingertip_centered_pos_noise
+        # ---- Step 2: Randomize target rotation ----
+        base_euler = torch.tensor(
+            self.cfg_task.randomize.fingertip_centered_rot_initial, device=self.device
+        ).unsqueeze(0).repeat(self.num_envs, 1)
 
-        # Set target rot
-        ctrl_target_fingertip_centered_euler = torch.tensor(self.cfg_task.randomize.fingertip_centered_rot_initial,
-                                                            device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
-
-        fingertip_centered_rot_noise = \
-            2 * (torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
-        fingertip_centered_rot_noise = fingertip_centered_rot_noise @ torch.diag(
-            torch.tensor(self.cfg_task.randomize.gripper_rand_rot_noise, device=self.device))
-        ctrl_target_fingertip_centered_euler += fingertip_centered_rot_noise
+        rand_rot_offset = (2 * torch.rand((self.num_envs, 3), device=self.device) - 1.0)
+        rand_rot_offset = rand_rot_offset @ torch.diag(
+            torch.tensor(self.cfg_task.randomize.gripper_rand_rot_noise, device=self.device)
+        )
+        ctrl_target_euler = base_euler + rand_rot_offset
         ctrl_tgt_quat = torch_utils.quat_from_euler_xyz(
-            ctrl_target_fingertip_centered_euler[:, 0],
-            ctrl_target_fingertip_centered_euler[:, 1],
-            ctrl_target_fingertip_centered_euler[:, 2])
+            ctrl_target_euler[:, 0], ctrl_target_euler[:, 1], ctrl_target_euler[:, 2]
+        )
 
+        # ---- Step 3: Move smoothly toward target ----
         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
+
 
     def _apply_actions_as_ctrl_targets(self, actions, ctrl_target_gripper_dof_pos, do_scale):
         """Apply actions from policy as position/rotation targets."""
