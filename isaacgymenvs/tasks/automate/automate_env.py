@@ -60,7 +60,6 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
         """Initialize instance variables. Initialize environment superclass. Acquire tensors."""
 
         self._get_env_yaml_params()
-
         super().__init__(
             cfg,
             rl_device,
@@ -70,7 +69,10 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
             virtual_screen_capture,
             force_render,
         )
-
+        if not hasattr(self, "env_ptrs"):
+            self.env_ptrs = []
+        if not hasattr(self, "camera_handles"):
+            self.camera_handles = []
         self.acquire_base_tensors()  # defined in superclass
         self._acquire_env_tensors()
         self.refresh_base_tensors()  # defined in superclass
@@ -372,7 +374,8 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
         self.fingertip_centered_body_id_env_actor = self.gym.find_actor_rigid_body_index(env_ptr, franka_handle,
                                                                                     'panda_fingertip_centered',
                                                                                    gymapi.DOMAIN_ACTOR)
-
+        self.panda_camera_id=self.gym.find_actor_rigid_body_index(env_ptr,franka_handle,'panda_camera', gymapi.DOMAIN_ACTOR)
+        print("Add Panda Camera")
 
     def _acquire_env_tensors(self):
         """Acquire and wrap tensors. Create views."""

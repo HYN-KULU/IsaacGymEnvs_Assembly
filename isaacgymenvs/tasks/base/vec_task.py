@@ -255,7 +255,7 @@ class VecTask(Env):
         self.last_rand_step = -1
         for env_id in range(self.num_envs):
             self.extern_actor_params[env_id] = None
-
+        # import pdb;pdb.set_trace()
         # create envs, sim and viewer
         self.sim_initialized = False
         self.create_sim()

@@ -85,7 +85,7 @@ class FactoryBase(VecTask, FactoryABCBase):
 
         if self.cfg_base.mode.export_scene:
             self.sim_params.use_gpu_pipeline = False
-
+        self.graphics_device_id=0
         self.sim = super().create_sim(compute_device=self.device_id,
                                       graphics_device=self.graphics_device_id,
                                       physics_engine=self.physics_engine,
