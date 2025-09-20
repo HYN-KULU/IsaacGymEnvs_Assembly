@@ -56,7 +56,8 @@ import matplotlib.pyplot as plt
 import isaacgymenvs.tasks.factory.factory_control as fc
 from concurrent.futures import ThreadPoolExecutor
 import math 
-
+import plotly.express as px
+import plotly.graph_objects as go
 def quat_to_matrix(q):
     """Convert Isaac Gym gymapi.Quat to 3x3 rotation matrix"""
     x, y, z, w = q.x, q.y, q.z, q.w
@@ -66,6 +67,112 @@ def quat_to_matrix(q):
         [2*x*z - 2*y*w,         2*y*z + 2*x*w,       1 - 2*x*x - 2*y*y]
     ])
     return R
+def filter_workspace(points: torch.Tensor,
+                     x_range: tuple,
+                     y_range: tuple,
+                     z_range: tuple) -> torch.Tensor:
+    """
+    Filter points within a 3D workspace box.
+
+    Args:
+        points: (N, 3) torch.Tensor, world coordinates
+        x_range: (min_x, max_x)
+        y_range: (min_y, max_y)
+        z_range: (min_z, max_z)
+
+    Returns:
+        filtered_points: (M, 3) torch.Tensor
+    """
+    mask = (
+        (points[:, 0] >= x_range[0]) & (points[:, 0] <= x_range[1]) &
+        (points[:, 1] >= y_range[0]) & (points[:, 1] <= y_range[1]) &
+        (points[:, 2] >= z_range[0]) & (points[:, 2] <= z_range[1])
+    )
+    return points[mask]
+def voxel_downsample(points: torch.Tensor, voxel_size: float, max_points: int = None):
+    """
+    Downsample point cloud with voxelization.
+
+    Args:
+        points: (N, 6) tensor [x, y, z, r, g, b]
+        voxel_size: float, voxel edge length
+        max_points: optional int, limit on number of output points
+
+    Returns:
+        (M, 6) tensor of downsampled points
+    """
+    assert points.ndim == 2 and points.shape[1] == 6, "points must be (N,6)"
+
+    # Quantize to voxel coordinates
+    coords = torch.floor(points[:, :3] / voxel_size)
+
+    # Get unique voxel indices and mapping
+    unique_coords, inverse_indices = torch.unique(coords, return_inverse=True, dim=0)
+
+    # Compute voxel-wise average (centroid for geometry + color)
+    downsampled = []
+    for i in range(unique_coords.shape[0]):
+        mask = (inverse_indices == i)
+        voxel_points = points[mask]
+        centroid = voxel_points.mean(dim=0, keepdim=True)  # (1,6)
+        downsampled.append(centroid)
+    downsampled = torch.cat(downsampled, dim=0)
+
+    # Optionally limit number of points
+    if max_points is not None and downsampled.shape[0] > max_points:
+        rand_idx = torch.randperm(downsampled.shape[0], device=points.device)[:max_points]
+        downsampled = downsampled[rand_idx]
+
+    return downsampled
+@torch.jit.script
+def depth_image_to_point_cloud_GPU(camera_tensor: torch.Tensor,
+                                   colors: torch.Tensor,
+                                   camera_view_matrix_inv: torch.Tensor,
+                                   camera_proj_matrix: torch.Tensor,
+                                   u: torch.Tensor,
+                                   v: torch.Tensor,
+                                   width: float,
+                                   height: float,
+                                   depth_bar: float,
+                                   device: torch.device) -> torch.Tensor:
+    # Depth and intrinsics
+    depth_buffer = camera_tensor.to(device)
+    vinv = camera_view_matrix_inv
+    proj = camera_proj_matrix
+    fu = 2.0 / proj[0, 0]
+    fv = 2.0 / proj[1, 1]
+
+    centerU = width / 2.0
+    centerV = height / 2.0
+    # Project into 3D
+    Z = depth_buffer
+    X = -(u - centerU) / width * Z * fu
+    Y =  (v - centerV) / height * Z * fv
+
+    # Flatten
+    Z = Z.reshape(-1)
+    X = X.reshape(-1)
+    Y = Y.reshape(-1)
+
+    # Flatten colors (H, W, 3) -> (N, 3)
+    colors = colors.reshape(-1, 3)
+
+    # Mask valid points
+    valid = Z > -depth_bar
+    X = X[valid]
+    Y = Y[valid]
+    Z = Z[valid]
+    colors = colors[valid]
+
+    # Homogeneous coords
+    position = torch.vstack((X, Y, Z, torch.ones(len(X), device=device))).permute(1, 0)
+    position = position @ vinv
+    points = position[:, 0:3]  # (N, 3)
+
+    # Concatenate with colors -> (N, 6)
+    points_rgb = torch.cat((points, colors), dim=1)
+    return points_rgb
+
 
 class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
     def __init__(
@@ -130,7 +237,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         super().create_envs()
         # Then add cameras to each env_ptr
         self.add_cameras()
+    def get_camera_intrinsics(self, cam_props):
+        width = cam_props.width
+        height = cam_props.height
+        fov = cam_props.horizontal_fov  # in radians
 
+        fx = 0.5 * width / np.tan(0.5 * fov)
+        fy = fx  # square pixels (Isaac Gym cameras are usually symmetric)
+        cx = width / 2.0
+        cy = height / 2.0
+
+        return fx, fy, cx, cy
+    
     def add_cameras(self):
         self.camera_handles = []
         # Shared base properties
@@ -138,7 +256,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         cam_props.width = 640   # your new resolution
         cam_props.height = 480
         cam_props.enable_tensors = True
+        self.cam_props=cam_props
         for env_ptr in self.env_ptrs:
+            cam_prop={}
             env_cameras = {}
             theta_deg = 120   # example: tilt downward 45°
             theta_rad = math.radians(theta_deg) 
@@ -421,6 +541,35 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         s1 = sin_theta / sin_theta_0
 
         return (s0 * q0) + (s1 * q1)
+    def rand_row(self, tensor, dim_needed):  
+        row_total = tensor.shape[0]
+        return tensor[torch.randint(low=0, high=row_total, size=(dim_needed,)),:]
+    
+    def furthest_point_sample(self, points: torch.Tensor, n_samples: int):
+        """
+        points: (N, 6) tensor [x, y, z, r, g, b]
+        return: (n_samples, 6) sampled points
+        """
+        N = points.shape[0]
+        centroids = torch.zeros(n_samples, dtype=torch.long, device=points.device)
+        distances = torch.ones(N, device=points.device) * 1e10
+
+        xyz = points[:, :3]  # only use geometry for FPS
+
+        # pick a random first centroid
+        farthest = torch.randint(0, N, (1,), device=points.device).item()
+
+        for i in range(n_samples):
+            centroids[i] = farthest
+            centroid = xyz[farthest, :].unsqueeze(0)  # (1, 3)
+            dist = torch.sum((xyz - centroid) ** 2, dim=1)
+            distances = torch.min(distances, dist)
+            farthest = torch.max(distances, dim=0)[1].item()
+
+        # return both geometry and color
+        return points[centroids]
+    
+ 
 
     def _move_gripper_to_eef_pose(self, env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper):
         """Move end-effector smoothly along a straight-line trajectory to target pose."""
@@ -492,69 +641,130 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 self.gym.step_graphics(self.sim)
                 self.gym.render_all_camera_sensors(self.sim)
                 self.gym.start_access_image_tensors(self.sim)
+                points_list=[]
+                for camera_key in ["top", "bottom", "panda"]:
+                    camera_rgb_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_COLOR)
+                    camera_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_DEPTH)
+                    torch_cam_tensor=gymtorch.wrap_tensor(camera_tensor)
+                    torch_cam_color_tensor=gymtorch.wrap_tensor(camera_rgb_tensor)
+                    cam_vinv=torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key]))).to(self.device)
+                    cam_proj=torch.tensor(self.gym.get_camera_proj_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key])).to(self.device)
+                    u = torch.arange(0, self.cam_props.width, device=self.device)
+                    v = torch.arange(0, self.cam_props.height, device=self.device)
+                    u_grid, v_grid = torch.meshgrid(u, v, indexing="xy")  # H×W grids
+                    colors = torch_cam_color_tensor[:, :, :3].to(torch.float32) / 255.0  # (H, W, 3) in [0,1]
+                    points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device)
+                    points=filter_workspace(points,(-0.6,0.5), (-0.4,0.4), (0.38,1))
+                    points_list.append(points)
+                points=torch.concatenate(points_list,dim=0)
+                
+                fps_points=self.furthest_point_sample(points,10000).cpu().detach().numpy()
+                vox_points=voxel_downsample(points,0.009,10000).cpu().detach().numpy()
+                x, y, z = fps_points[:, 0], fps_points[:, 1], fps_points[:, 2]
+                rgb = (fps_points[:, 3:6] * 255).astype(int)  # convert to 0–255
 
-                def fetch_image(env_id, cam_handle, cam_type, height, width):
-                    img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
-                    if cam_type == gymapi.IMAGE_COLOR:
-                        return img.reshape(height, width, 4)[:, :, :3]  # RGB
-                    elif cam_type == gymapi.IMAGE_DEPTH:
-                        img = img.reshape(height, width)
-                        return np.where(np.isinf(img), np.nan, img)
+                # Convert to "rgb(r,g,b)" strings
+                colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
 
-                # Storage lists
-                camera1_rgb_list = []
-                camera2_rgb_list = []
-                camera1_depth_list = []
-                camera2_depth_list = []
-                camera3_rgb_list=[]
-                camera3_depth_list=[]
-                height, width = 480, 640
+                fig = go.Figure(data=[go.Scatter3d(
+                    x=x,
+                    y=y,
+                    z=z,
+                    mode='markers',
+                    marker=dict(
+                        size=2,
+                        color=colors,  # raw RGB per point
+                        opacity=0.8
+                    )
+                )])
 
-                with ThreadPoolExecutor(max_workers=16) as executor:
-                    futures = {
-                        ("top", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_COLOR, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    }
-                    futures.update({
-                        ("top", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_DEPTH, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    })
-                    futures.update({
-                        ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    })
-                    futures.update({
-                        ("bottom", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_DEPTH, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    })
-                    futures.update({
-                        ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    })
-                    futures.update({
-                        ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
-                        for env_id in range(len(self.env_ptrs))
-                    })
+                fig.write_html(f"./fps_pointcloud_{fps_points.shape[0]}.html")
 
-                # Collect results in order of env_id
-                for env_id in range(len(self.env_ptrs)):
-                    camera1_rgb_list.append(futures[("top", "color", env_id)].result())
-                    camera1_depth_list.append(futures[("top", "depth", env_id)].result())
-                    camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
-                    camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
-                    camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
-                    camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
+                x, y, z = vox_points[:, 0], vox_points[:, 1], vox_points[:, 2]
+                rgb = (vox_points[:, 3:6] * 255).astype(int)  # convert to 0–255
 
-                # Convert to arrays if desired
-                self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
-                self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
-                self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
-                self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
-                self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
-                self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
+                # Convert to "rgb(r,g,b)" strings
+                colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
+
+                fig = go.Figure(data=[go.Scatter3d(
+                    x=x,
+                    y=y,
+                    z=z,
+                    mode='markers',
+                    marker=dict(
+                        size=2,
+                        color=colors,  # raw RGB per point
+                        opacity=0.8
+                    )
+                )])
+
+                fig.write_html(f"./voxel_pointcloud_{vox_points.shape[0]}.html")
+
+                # def fetch_image(env_id, cam_handle, cam_type, height, width):
+                #     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
+                #     if cam_type == gymapi.IMAGE_COLOR:
+                #         return img.reshape(height, width, 4)[:, :, :3]  # RGB
+                #     elif cam_type == gymapi.IMAGE_DEPTH:
+                #         img = img.reshape(height, width)
+                #         return np.where(np.isinf(img), np.nan, img)
+
+                # # Storage lists
+                # camera1_rgb_list = []
+                # camera2_rgb_list = []
+                # camera1_depth_list = []
+                # camera2_depth_list = []
+                # camera3_rgb_list=[]
+                # camera3_depth_list=[]
+                # height, width = 480, 640
+
+                # with ThreadPoolExecutor(max_workers=16) as executor:
+                #     futures = {
+                #         ("top", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_COLOR, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     }
+                #     futures.update({
+                #         ("top", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_DEPTH, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     })
+                #     futures.update({
+                #         ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     })
+                #     futures.update({
+                #         ("bottom", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_DEPTH, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     })
+                #     futures.update({
+                #         ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     })
+                #     futures.update({
+                #         ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
+                #         for env_id in range(len(self.env_ptrs))
+                #     })
+
+                # # Collect results in order of env_id
+                # for env_id in range(len(self.env_ptrs)):
+                #     camera1_rgb_list.append(futures[("top", "color", env_id)].result())
+                #     camera1_depth_list.append(futures[("top", "depth", env_id)].result())
+                #     camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
+                #     camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
+                #     camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
+                #     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
+
+                # # Convert to arrays if desired
+                # self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
+                # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
+                # self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
+                # self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
+                # self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
+                # self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
                 self.gym.end_access_image_tensors(self.sim)
                 # imageio.imwrite("camera_top.png", self.camera1_rgb_traj[0][0].astype(np.uint8))
-                # import pdb;pdb.set_trace()
+                # img=self.camera1_rgb_traj[0][0]
+                # depth=self.camera1_depth_traj[0][0]
+                # fx,fy,cx,cy=self.get_camera_intrinsics(self.cam_props)
+                import pdb;pdb.set_trace()
                 print(f"Collect Image {len(self.camera1_depth_traj)}")
 
 

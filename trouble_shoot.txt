@@ -1,0 +1,19 @@
+sudo apt install -y nvidia-driver-535
+sudo reboot
+sudo apt install -y libegl1 libegl1-mesa libegl1-mesa-dev libgles2-mesa-dev
+sudo apt install -y mesa-utils-extra
+eglinfo | grep -A5 "OpenGL version"
+
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+sudo apt update
+sudo apt install -y python3.7 python3.7-dev python3.7-distutils libpython3.7 libpython3.7-stdlib
+
+For iJIT_NotifyEvent
+May need to modify cmakelist.txt, change STATIC to SHARED
+git clone the ittapi repo
+cd ~/automate/IsaacGymEnvs_Assembly/ittapi/build
+rm -rf *
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+make -j$(nproc)
+sudo make install
+sudo ldconfig
