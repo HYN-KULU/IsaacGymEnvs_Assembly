@@ -84,7 +84,6 @@ def launch_rlg_hydra(cfg: DictConfig):
     import gym
     from isaacgymenvs.utils.reformat import omegaconf_to_dict, print_dict
     from isaacgymenvs.utils.utils import set_np_formatting, set_seed
-
     if cfg.pbt.enabled:
         initial_pbt_check(cfg)
 
@@ -118,7 +117,7 @@ def launch_rlg_hydra(cfg: DictConfig):
 
     # sets seed. if seed is -1 will pick a random one
     cfg.seed = set_seed(cfg.seed, torch_deterministic=cfg.torch_deterministic, rank=global_rank)
-
+    cfg.task.seed=cfg.seed
     def create_isaacgym_env(**kwargs):
         envs = isaacgymenvs.make(
             cfg.seed, 
@@ -206,7 +205,6 @@ def launch_rlg_hydra(cfg: DictConfig):
         os.makedirs(experiment_dir, exist_ok=True)
         with open(os.path.join(experiment_dir, 'config.yaml'), 'w') as f:
             f.write(OmegaConf.to_yaml(cfg))
-
     runner.run({
         'train': not cfg.test,
         'play': cfg.test,
