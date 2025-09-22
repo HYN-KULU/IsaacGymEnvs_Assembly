@@ -7,16 +7,10 @@ conda activate rlgpu
 # Go into isaacgymenvs
 cd isaacgymenvs
 
-# Loop over seeds 0 to 40
-for seed in $(seq 0 40); do
-    echo "=== Running training with seed=$seed ==="
-    python train.py \
+
+python eval.py \
         task=AutoMateTaskDisassemble \
         task.env.overwrite_subassemblies=True \
         task.env.desired_subassemblies=['asset_00681'] \
         headless=True \
-        seed=$seed
-done
-
-# Go back
-cd ..
+        seed=0
