@@ -186,7 +186,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         force_render,
     ):
         """Initialize instance variables. Initialize task superclass."""
-
         self.cfg = cfg
         self._get_task_yaml_params()
         print("Calling This in Automate Disassembly ***************************************")
@@ -226,11 +225,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # load ppo configuration, just as placeholder 
         # since no RL training included in disassembly path collection task
-        ppo_path = os.path.join(
-            "train/AutoMateTaskDisassemblePPO.yaml"
-        )  # relative to Gym's Hydra search path (cfg dir)
-        self.cfg_ppo = hydra.compose(config_name=ppo_path)
-        self.cfg_ppo = self.cfg_ppo["train"]  # strip superfluous nesting
+        # ppo_path = os.path.join(
+        #     "train/AutoMateTaskDisassemblePPO.yaml"
+        # )  # relative to Gym's Hydra search path (cfg dir)
+        # self.cfg_ppo = hydra.compose(config_name=ppo_path)
+        # self.cfg_ppo = self.cfg_ppo["train"]  # strip superfluous nesting
 
     def create_envs(self):
         # First create the normal environments (Franka, plug, socket, etc.)
@@ -284,13 +283,13 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # import pdb;pdb.set_trace()
     
             # --- Top view (slightly shifted, higher)
-            cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
-            self.gym.set_camera_location(
-                cam_handle_top, env_ptr,
-                gymapi.Vec3(0.54, 0.48, 0.7),  # your top cam pos
-                gymapi.Vec3(0, 0, 0.7)                                 # look at target
-            )
-            env_cameras["top"] = cam_handle_top
+            # cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
+            # self.gym.set_camera_location(
+            #     cam_handle_top, env_ptr,
+            #     gymapi.Vec3(0.54, 0.48, 0.7),  # your top cam pos
+            #     gymapi.Vec3(0, 0, 0.7)                                 # look at target
+            # )
+            # env_cameras["top"] = cam_handle_top
             # self.gym.prepare_sim(self.sim)
             # self.gym.simulate(self.sim)
             # self.gym.fetch_results(self.sim,True)
@@ -300,13 +299,13 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # imageio.imwrite("panda_camera.png", color_image)
             # import pdb;pdb.set_trace()
             # --- Bottom view (angled from below)
-            cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
-            self.gym.set_camera_location(
-                cam_handle_bottom, env_ptr,
-                gymapi.Vec3(0.5 * 0.6, -0.5 * 0.6, 0.7),  # your bottom cam pos
-                gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
-            )
-            env_cameras["bottom"] = cam_handle_bottom
+            # cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+            # self.gym.set_camera_location(
+            #     cam_handle_bottom, env_ptr,
+            #     gymapi.Vec3(0.5 * 0.6, -0.5 * 0.6, 0.7),  # your bottom cam pos
+            #     gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
+            # )
+            # env_cameras["bottom"] = cam_handle_bottom
             # import pdb;pdb.set_trace()
             # cam_pose_top=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_top)
             # cam_pose_bottom=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_bottom)
@@ -319,7 +318,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         """Load grasp pose and disassembly distance for plugs in each environment."""
 
         plug_grasps, disassembly_dists = [], []
-        plug_grasp_path = os.path.join(os.getcwd(), self.cfg_task.env.data_dir, self.cfg_task.env.plug_grasp_file)
+
+        # plug_grasp_path = os.path.join(os.getcwd(), self.cfg_task.env.data_dir, self.cfg_task.env.plug_grasp_file)
+        # import pdb;pdb.set_trace()
+        plug_grasp_path="/lambda/nfs/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/plug_grasps.json"
         if os.path.exists(plug_grasp_path):
             in_file = open(plug_grasp_path, "r")
             plug_grasp_dict = json.load(in_file)
@@ -415,7 +417,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
     def reset_idx(self, env_ids):
         """Reset specified environments."""
-
         self._reset_franka(env_ids)
         self.simulate_and_refresh()
 
@@ -569,7 +570,203 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # return both geometry and color
         return points[centroids]
     
- 
+    def get_wrist_camera_depth(self, save_path=None):
+        """
+        Render and visualize the top camera (camera1) for the given environment.
+        Default env_id=0 (the first environment).
+        
+        Args:
+            env_id (int): which environment to render
+            save_path (str or None): if given, save the image to this path
+        """
+        # Step sim and graphics
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        depth_list=[]
+        for env_id in range(len(self.env_ptrs)):
+            # Fetch the top camera handle
+            cam_handle = self.camera_handles[env_id]["panda"]
+            # Get RGB image (H, W, 4) → drop alpha
+            depth_image = self.gym.get_camera_image(
+                self.sim, self.env_ptrs[env_id], cam_handle, gymapi.IMAGE_DEPTH
+            ).reshape(self.cam_props.height, self.cam_props.width)
+            depth_list.append(depth_image)
+        return np.stack(depth_list)
+    
+    def get_wrist_camera_rgb(self, env_id=0, save_path=None):
+        """
+        Render and visualize the top camera (camera1) for the given environment.
+        Default env_id=0 (the first environment).
+        
+        Args:
+            env_id (int): which environment to render
+            save_path (str or None): if given, save the image to this path
+        """
+        # Step sim and graphics
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        rgb_list=[]
+        for env_id in range(len(self.env_ptrs)):
+            # Fetch the top camera handle
+            cam_handle = self.camera_handles[env_id]["panda"]
+
+            # Get RGB image (H, W, 4) → drop alpha
+            color_image = self.gym.get_camera_image(
+                self.sim, self.env_ptrs[env_id], cam_handle, gymapi.IMAGE_COLOR
+            ).reshape(self.cam_props.height, self.cam_props.width, 4)[:, :, :3]
+            rgb_list.append(color_image)
+        # Save if path provided
+        # if save_path is not None:
+        #     imageio.imwrite(save_path, color_image.astype(np.uint8))
+        #     print(f"Saved top camera image to {save_path}")
+        return np.stack(rgb_list)
+    
+    def get_wrist_camera_visuals(self, env_id=0, save_path=None):
+        """
+        Render and visualize the top camera (camera1) for the given environment.
+        Default env_id=0 (the first environment).
+        
+        Args:
+            env_id (int): which environment to render
+            save_path (str or None): if given, save the image to this path
+        """
+        # Step sim and graphics
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        rgb_list=[]
+        for env_id in range(len(self.env_ptrs)):
+            # Fetch the top camera handle
+            cam_handle = self.camera_handles[env_id]["panda"]
+
+            # Get RGB image (H, W, 4) → drop alpha
+            color_image = self.gym.get_camera_image(
+                self.sim, self.env_ptrs[env_id], cam_handle, gymapi.IMAGE_COLOR
+            ).reshape(self.cam_props.height, self.cam_props.width, 4)[:, :, :3]
+            rgb_list.append(color_image)
+        # Save if path provided
+        # if save_path is not None:
+        #     imageio.imwrite(save_path, color_image.astype(np.uint8))
+        #     print(f"Saved top camera image to {save_path}")
+        return rgb_list
+
+    def visualize_top_camera(self, env_id=0, save_path=None):
+        """
+        Render and visualize the top camera (camera1) for the given environment.
+        Default env_id=0 (the first environment).
+        
+        Args:
+            env_id (int): which environment to render
+            save_path (str or None): if given, save the image to this path
+        """
+        # Step sim and graphics
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+
+        # Fetch the top camera handle
+        cam_handle = self.camera_handles[env_id]["panda"]
+
+        # Get RGB image (H, W, 4) → drop alpha
+        color_image = self.gym.get_camera_image(
+            self.sim, self.env_ptrs[env_id], cam_handle, gymapi.IMAGE_COLOR
+        ).reshape(self.cam_props.height, self.cam_props.width, 4)[:, :, :3]
+
+        # Save if path provided
+        # if save_path is not None:
+        #     imageio.imwrite(save_path, color_image.astype(np.uint8))
+        #     print(f"Saved top camera image to {save_path}")
+        return color_image
+    
+
+    def _apply_absolute_action(self, env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper):
+        """Move end-effector smoothly along a straight-line trajectory to target pose."""
+
+        # interp_pos=self.ctrl_target_fingertip_centered_pos[env_ids] + delta_pos
+        interp_pos=ctrl_tgt_pos
+        interp_quat = ctrl_tgt_quat
+        # Update control targets
+        self.ctrl_target_fingertip_centered_pos[env_ids] = interp_pos[env_ids]
+        self.ctrl_target_fingertip_centered_quat[env_ids] = interp_quat[env_ids]
+        
+        # ---- Step sim and logging ----
+        self.refresh_base_tensors()
+        self.refresh_env_tensors()
+        self._refresh_task_tensors()
+        if if_log:
+            self._log_robot_state_per_timestep()
+        # Compute error relative to interpolated pose
+        pos_error, axis_angle_error = fc.get_pose_error(
+            fingertip_midpoint_pos=self.fingertip_centered_pos,
+            fingertip_midpoint_quat=self.fingertip_centered_quat,
+            ctrl_target_fingertip_midpoint_pos=self.ctrl_target_fingertip_centered_pos,
+            ctrl_target_fingertip_midpoint_quat=self.ctrl_target_fingertip_centered_quat,
+            jacobian_type=self.cfg_ctrl['jacobian_type'],
+            rot_error_type='axis_angle')
+        # Form action from error
+        
+        delta_hand_pose = torch.cat((pos_error, axis_angle_error), dim=-1)
+        
+        actions = torch.zeros((self.num_envs, self.cfg_task.env.numActions), device=self.device)
+        actions[env_ids, :6] = delta_hand_pose[env_ids]
+        # Control gripper open/close
+        if close_gripper:
+            self._apply_actions_as_ctrl_targets(actions=actions,
+                                                ctrl_target_gripper_dof_pos=0.0,
+                                                do_scale=False)
+        else:
+            self._apply_actions_as_ctrl_targets(actions=actions,
+                                                ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
+                                                do_scale=False)
+        # Step simulation
+        self.gym.simulate(self.sim)
+
+    def _apply_delta_action(self, env_ids, delta_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper):
+        """Move end-effector smoothly along a straight-line trajectory to target pose."""
+
+        interp_pos=self.ctrl_target_fingertip_centered_pos[env_ids] + delta_pos
+        interp_quat = ctrl_tgt_quat
+        # Update control targets
+        self.ctrl_target_fingertip_centered_pos[env_ids] = interp_pos[env_ids]
+        self.ctrl_target_fingertip_centered_quat[env_ids] = interp_quat[env_ids]
+        
+        # ---- Step sim and logging ----
+        self.refresh_base_tensors()
+        self.refresh_env_tensors()
+        self._refresh_task_tensors()
+        if if_log:
+            self._log_robot_state_per_timestep()
+        # Compute error relative to interpolated pose
+        pos_error, axis_angle_error = fc.get_pose_error(
+            fingertip_midpoint_pos=self.fingertip_centered_pos,
+            fingertip_midpoint_quat=self.fingertip_centered_quat,
+            ctrl_target_fingertip_midpoint_pos=self.ctrl_target_fingertip_centered_pos,
+            ctrl_target_fingertip_midpoint_quat=self.ctrl_target_fingertip_centered_quat,
+            jacobian_type=self.cfg_ctrl['jacobian_type'],
+            rot_error_type='axis_angle')
+        # Form action from error
+        
+        delta_hand_pose = torch.cat((pos_error, axis_angle_error), dim=-1)
+        
+        actions = torch.zeros((self.num_envs, self.cfg_task.env.numActions), device=self.device)
+        actions[env_ids, :6] = delta_hand_pose[env_ids]
+        # Control gripper open/close
+        if close_gripper:
+            self._apply_actions_as_ctrl_targets(actions=actions,
+                                                ctrl_target_gripper_dof_pos=0.0,
+                                                do_scale=False)
+        else:
+            self._apply_actions_as_ctrl_targets(actions=actions,
+                                                ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
+                                                do_scale=False)
+        # Step simulation
+        self.gym.simulate(self.sim)
 
     def _move_gripper_to_eef_pose(self, env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper):
         """Move end-effector smoothly along a straight-line trajectory to target pose."""
@@ -580,6 +777,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # ---- Step 2: Interpolate trajectory over sim_steps ----
         for t in range(sim_steps):
+            # print("t: ",t)
             alpha = (t + 1) / sim_steps  # goes from 0 → 1
 
             # Linear interpolation for position
@@ -591,7 +789,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # Update control targets
             self.ctrl_target_fingertip_centered_pos[env_ids] = interp_pos[env_ids]
             self.ctrl_target_fingertip_centered_quat[env_ids] = interp_quat[env_ids]
-
+            
             # ---- Step sim and logging ----
             self.refresh_base_tensors()
             self.refresh_env_tensors()
@@ -610,7 +808,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 rot_error_type='axis_angle')
 
             # Form action from error
+            
             delta_hand_pose = torch.cat((pos_error, axis_angle_error), dim=-1)
+            
             actions = torch.zeros((self.num_envs, self.cfg_task.env.numActions), device=self.device)
             actions[env_ids, :6] = delta_hand_pose[env_ids]
 
@@ -626,6 +826,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
             # Step simulation
             self.gym.simulate(self.sim)
+            print(self.fingertip_centered_pos[0], if_log)
             # if close_gripper:
             #     self._apply_actions_as_ctrl_targets(actions=actions,
             #                                         ctrl_target_gripper_dof_pos=0.0,
@@ -641,131 +842,115 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 self.gym.step_graphics(self.sim)
                 self.gym.render_all_camera_sensors(self.sim)
                 self.gym.start_access_image_tensors(self.sim)
-                points_list=[]
-                for camera_key in ["top", "bottom", "panda"]:
-                    camera_rgb_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_COLOR)
-                    camera_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_DEPTH)
-                    torch_cam_tensor=gymtorch.wrap_tensor(camera_tensor)
-                    torch_cam_color_tensor=gymtorch.wrap_tensor(camera_rgb_tensor)
-                    cam_vinv=torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key]))).to(self.device)
-                    cam_proj=torch.tensor(self.gym.get_camera_proj_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key])).to(self.device)
-                    u = torch.arange(0, self.cam_props.width, device=self.device)
-                    v = torch.arange(0, self.cam_props.height, device=self.device)
-                    u_grid, v_grid = torch.meshgrid(u, v, indexing="xy")  # H×W grids
-                    colors = torch_cam_color_tensor[:, :, :3].to(torch.float32) / 255.0  # (H, W, 3) in [0,1]
-                    points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device)
-                    points=filter_workspace(points,(-0.6,0.5), (-0.4,0.4), (0.38,1))
-                    points_list.append(points)
-                points=torch.concatenate(points_list,dim=0)
+                # points_list=[]
+                # for camera_key in ["top", "bottom", "panda"]:
+                #     camera_rgb_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_COLOR)
+                #     camera_tensor=self.gym.get_camera_image_gpu_tensor(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key],gymapi.IMAGE_DEPTH)
+                #     torch_cam_tensor=gymtorch.wrap_tensor(camera_tensor)
+                #     torch_cam_color_tensor=gymtorch.wrap_tensor(camera_rgb_tensor)
+                #     cam_vinv=torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key]))).to(self.device)
+                #     cam_proj=torch.tensor(self.gym.get_camera_proj_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0][camera_key])).to(self.device)
+                #     u = torch.arange(0, self.cam_props.width, device=self.device)
+                #     v = torch.arange(0, self.cam_props.height, device=self.device)
+                #     u_grid, v_grid = torch.meshgrid(u, v, indexing="xy")  # H×W grids
+                #     colors = torch_cam_color_tensor[:, :, :3].to(torch.float32) / 255.0  # (H, W, 3) in [0,1]
+                #     points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device)
+                #     points=filter_workspace(points,(-0.6,0.5), (-0.4,0.4), (0.38,1))
+                #     if camera_key in ["top", "bottom"]:
+                #         points=voxel_downsample(points,0.009,2000).cpu().detach().numpy()
+                #     else:
+                #         # points=self.furthest_point_sample(points,8000).cpu().detach().numpy()
+                #         points=voxel_downsample(points,0.001,8000).cpu().detach().numpy()
+                #     points_list.append(points)
+                # points=np.concatenate(points_list,axis=0)
                 
-                fps_points=self.furthest_point_sample(points,10000).cpu().detach().numpy()
-                vox_points=voxel_downsample(points,0.009,10000).cpu().detach().numpy()
-                x, y, z = fps_points[:, 0], fps_points[:, 1], fps_points[:, 2]
-                rgb = (fps_points[:, 3:6] * 255).astype(int)  # convert to 0–255
+                # fps_points=self.furthest_point_sample(points,10000).cpu().detach().numpy()
+                # vox_points=voxel_downsample(points,0.009,10000).cpu().detach().numpy()
+                # x, y, z = points[:, 0], points[:, 1], points[:, 2]
+                # rgb = (points[:, 3:6] * 255).astype(int)  # convert to 0–255
 
-                # Convert to "rgb(r,g,b)" strings
-                colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
+                # # # Convert to "rgb(r,g,b)" strings
+                # colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
 
-                fig = go.Figure(data=[go.Scatter3d(
-                    x=x,
-                    y=y,
-                    z=z,
-                    mode='markers',
-                    marker=dict(
-                        size=2,
-                        color=colors,  # raw RGB per point
-                        opacity=0.8
-                    )
-                )])
+                # fig = go.Figure(data=[go.Scatter3d(
+                #     x=x,
+                #     y=y,
+                #     z=z,
+                #     mode='markers',
+                #     marker=dict(
+                #         size=2,
+                #         color=colors,  # raw RGB per point
+                #         opacity=0.8
+                #     )
+                # )])
 
-                fig.write_html(f"./fps_pointcloud_{fps_points.shape[0]}.html")
+                # fig.write_html(f"./scene_pointcloud_{points.shape[0]}.html")
 
-                x, y, z = vox_points[:, 0], vox_points[:, 1], vox_points[:, 2]
-                rgb = (vox_points[:, 3:6] * 255).astype(int)  # convert to 0–255
-
-                # Convert to "rgb(r,g,b)" strings
-                colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
-
-                fig = go.Figure(data=[go.Scatter3d(
-                    x=x,
-                    y=y,
-                    z=z,
-                    mode='markers',
-                    marker=dict(
-                        size=2,
-                        color=colors,  # raw RGB per point
-                        opacity=0.8
-                    )
-                )])
-
-                fig.write_html(f"./voxel_pointcloud_{vox_points.shape[0]}.html")
-
-                # def fetch_image(env_id, cam_handle, cam_type, height, width):
-                #     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
-                #     if cam_type == gymapi.IMAGE_COLOR:
-                #         return img.reshape(height, width, 4)[:, :, :3]  # RGB
-                #     elif cam_type == gymapi.IMAGE_DEPTH:
-                #         img = img.reshape(height, width)
-                #         return np.where(np.isinf(img), np.nan, img)
 
                 # # Storage lists
-                # camera1_rgb_list = []
-                # camera2_rgb_list = []
-                # camera1_depth_list = []
-                # camera2_depth_list = []
-                # camera3_rgb_list=[]
-                # camera3_depth_list=[]
-                # height, width = 480, 640
-
-                # with ThreadPoolExecutor(max_workers=16) as executor:
-                #     futures = {
-                #         ("top", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_COLOR, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     }
-                #     futures.update({
-                #         ("top", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_DEPTH, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     })
-                #     futures.update({
-                #         ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     })
-                #     futures.update({
-                #         ("bottom", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_DEPTH, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     })
-                #     futures.update({
-                #         ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     })
-                #     futures.update({
-                #         ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
-                #         for env_id in range(len(self.env_ptrs))
-                #     })
+                camera1_rgb_list = []
+                camera2_rgb_list = []
+                camera1_depth_list = []
+                camera2_depth_list = []
+                camera3_rgb_list=[]
+                camera3_depth_list=[]
+                height, width = 480, 640
+                def fetch_image(env_id, cam_handle, cam_type, height, width):
+                    img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
+                    if cam_type == gymapi.IMAGE_COLOR:
+                        return img.reshape(height, width, 4)[:, :, :3]  # RGB
+                    elif cam_type == gymapi.IMAGE_DEPTH:
+                        img = img.reshape(height, width)
+                        # return np.where(np.isinf(img), np.nan, img)
+                        return img
+                with ThreadPoolExecutor(max_workers=16) as executor:
+                    futures = {
+                        ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
+                        for env_id in range(len(self.env_ptrs))
+                    }
+                    futures.update({
+                        ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
+                        for env_id in range(len(self.env_ptrs))
+                    })
+                    # futures.update({
+                    #     ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
+                    #     for env_id in range(len(self.env_ptrs))
+                    # })
+                    # futures.update({
+                    #     ("bottom", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_DEPTH, height, width)
+                    #     for env_id in range(len(self.env_ptrs))
+                    # })
+                    # futures.update({
+                    #     ("top", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_COLOR, height, width)
+                    #     for env_id in range(len(self.env_ptrs))
+                    # })
+                    # futures.update({
+                    #     ("top", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_DEPTH, height, width)
+                    #     for env_id in range(len(self.env_ptrs))
+                    # })
 
                 # # Collect results in order of env_id
-                # for env_id in range(len(self.env_ptrs)):
-                #     camera1_rgb_list.append(futures[("top", "color", env_id)].result())
-                #     camera1_depth_list.append(futures[("top", "depth", env_id)].result())
-                #     camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
-                #     camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
-                #     camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
-                #     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
+                for env_id in range(len(self.env_ptrs)):
+                    # camera1_rgb_list.append(futures[("top", "color", env_id)].result())
+                    # camera1_depth_list.append(futures[("top", "depth", env_id)].result())
+                    # camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
+                    # camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
+                    camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
+                    camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
 
                 # # Convert to arrays if desired
                 # self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
                 # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
-                # self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
+                self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
                 # self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
                 # self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
-                # self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
+                self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
                 self.gym.end_access_image_tensors(self.sim)
                 # imageio.imwrite("camera_top.png", self.camera1_rgb_traj[0][0].astype(np.uint8))
                 # img=self.camera1_rgb_traj[0][0]
                 # depth=self.camera1_depth_traj[0][0]
                 # fx,fy,cx,cy=self.get_camera_intrinsics(self.cam_props)
-                import pdb;pdb.set_trace()
-                print(f"Collect Image {len(self.camera1_depth_traj)}")
+                print(f"Collect Image {len(self.camera3_depth_traj)}")
 
 
         self.dof_vel[env_ids, :] = torch.zeros_like(self.dof_vel[env_ids])
@@ -803,12 +988,53 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         if_intersect = np.ones(self.num_envs, dtype=np.float32)
 
         env_ids = np.argwhere(if_intersect==1).reshape(-1)
-        self._lift_gripper(self.disassembly_dists * 3.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
+        self._lift_gripper(self.disassembly_dists * 2.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
         self.simulate_and_refresh()
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
 
         env_ids = np.argwhere(if_intersect==0).reshape(-1)
         self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=True, close_gripper=True)
+    
+    def disassemble_plug_dagger(self, ctrl_tgt_pos=None ,ctrl_tgt_quat=None):
+        if_intersect = np.ones(self.num_envs, dtype=np.float32)
+        env_ids = np.argwhere(if_intersect==1).reshape(-1)
+        lift_distance=ctrl_tgt_pos[:,2]+0.003-torch.empty_like(self.fingertip_centered_pos).copy_(self.fingertip_centered_pos)[:,2]
+        self._lift_gripper(lift_distance, self.cfg_task.env.disassemble_sim_steps, env_ids)
+        self.simulate_and_refresh()
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 30, if_log=True, close_gripper=True)
+        self._log_robot_state(env_ids)
+        self._log_object_state(env_ids)
+        self._save_log_traj()
+        # self.save_first_env_images(index=1)
+
+    def disassemble_plug_from_socket_eval_init(self):
+        """Lift plug from socket till disassembly and then randomize end-effector pose."""
+        print("Disassembly")
+        if_intersect = np.ones(self.num_envs, dtype=np.float32)
+
+        env_ids = np.argwhere(if_intersect==1).reshape(-1)
+        self._lift_gripper_eval_init(self.disassembly_dists * 3.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
+        self.simulate_and_refresh()
+        if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
+
+        env_ids = np.argwhere(if_intersect==0).reshape(-1)
+        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=False, close_gripper=True)
+
+    def _lift_gripper_eval_init(self, lift_distance, sim_steps, env_ids=None):
+        """Lift gripper by specified distance. Called outside RL loop (i.e., after last step of episode)."""
+
+        ctrl_tgt_pos = torch.empty_like(self.fingertip_centered_pos).copy_(self.fingertip_centered_pos)
+        ctrl_tgt_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device).repeat((self.num_envs,1))
+        ctrl_tgt_pos[:, 2] += lift_distance
+        if len(env_ids) == 0:
+            env_ids = np.array(range(self.num_envs)).reshape(-1)
+
+        self._move_gripper_to_eef_pose(env_ids, 
+                                        ctrl_tgt_pos, 
+                                        ctrl_tgt_quat, 
+                                        sim_steps, 
+                                        if_log=False, 
+                                        close_gripper=True)
 
     def _lift_gripper(self, lift_distance, sim_steps, env_ids=None):
         """Lift gripper by specified distance. Called outside RL loop (i.e., after last step of episode)."""
@@ -884,6 +1110,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # ---- Step 3: Move smoothly toward target ----
         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
+        # self._move_gripper_to_eef_pose(env_ids,torch.tensor([-0.0362,-0.0463,0.5208]).cuda(),torch.tensor([0.9973,-0.0421,-0.0358,-0.04789]).cuda(),sim_steps=120,if_log=True,close_gripper=True)
 
 
     def _apply_actions_as_ctrl_targets(self, actions, ctrl_target_gripper_dof_pos, do_scale):
@@ -976,37 +1203,37 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.log_init_plug_quat += self.init_plug_quat[env_ids].cpu().tolist()
 
 
-    def save_first_env_images(self, out_dir="saved_visual"):
+    def save_first_env_images(self, out_dir="saved_visual", index=0):
         """
         Save first environment's RGB images for camera1 and camera2 in separate folders,
         and generate reverse-order videos for each (disassembly -> assembly).
         """
-        env_id = 0  # only save the first environment
-        num_steps = len(self.camera1_rgb_traj)  # should be ~180
+        env_id = index  # only save the first environment
+        num_steps = len(self.camera3_rgb_traj)  # should be ~180
 
         # Create output dirs
-        cam1_dir = os.path.join(out_dir, "camera1")
-        cam2_dir = os.path.join(out_dir, "camera2")
+        # cam1_dir = os.path.join(out_dir, "camera1")
+        # cam2_dir = os.path.join(out_dir, "camera2")
         cam3_dir = os.path.join(out_dir, "camera3")
-        os.makedirs(cam1_dir, exist_ok=True)
-        os.makedirs(cam2_dir, exist_ok=True)
+        # os.makedirs(cam1_dir, exist_ok=True)
+        # os.makedirs(cam2_dir, exist_ok=True)
         os.makedirs(cam3_dir, exist_ok=True)
 
         # Save frames
         for step in range(num_steps):
-            img1 = self.camera1_rgb_traj[step][env_id]  # (H, W, 3)
-            img2 = self.camera2_rgb_traj[step][env_id]
+            # img1 = self.camera1_rgb_traj[step][env_id]  # (H, W, 3)
+            # img2 = self.camera2_rgb_traj[step][env_id]
             img3 = self.camera3_rgb_traj[step][env_id]
 
-            imageio.imwrite(os.path.join(cam1_dir, f"step{step:03d}.png"), img1.astype(np.uint8))
-            imageio.imwrite(os.path.join(cam2_dir, f"step{step:03d}.png"), img2.astype(np.uint8))
+            # imageio.imwrite(os.path.join(cam1_dir, f"step{step:03d}.png"), img1.astype(np.uint8))
+            # imageio.imwrite(os.path.join(cam2_dir, f"step{step:03d}.png"), img2.astype(np.uint8))
             imageio.imwrite(os.path.join(cam3_dir, f"step{step:03d}.png"), img3.astype(np.uint8))
-            depth1 = self.camera1_depth_traj[step][env_id] 
-            depth2 = self.camera2_depth_traj[step][env_id]
-            depth3 = self.camera3_depth_traj[step][env_id]
-            np.save(os.path.join(cam1_dir, f"step{step:03d}_depth.npy"), depth1)
-            np.save(os.path.join(cam2_dir, f"step{step:03d}_depth.npy"), depth2)
-            np.save(os.path.join(cam3_dir, f"step{step:03d}_depth.npy"), depth3)
+            # depth1 = self.camera1_depth_traj[step][env_id] 
+            # depth2 = self.camera2_depth_traj[step][env_id]
+            # depth3 = self.camera3_depth_traj[step][env_id]
+            # np.save(os.path.join(cam1_dir, f"step{step:03d}_depth.npy"), depth1)
+            # np.save(os.path.join(cam2_dir, f"step{step:03d}_depth.npy"), depth2)
+            # np.save(os.path.join(cam3_dir, f"step{step:03d}_depth.npy"), depth3)
 
             # imageio.imwrite(os.path.join(cam1_dir, f"step{step:03d}_depth.png"), depth1_mm)
             # imageio.imwrite(os.path.join(cam2_dir, f"step{step:03d}_depth.png"), depth2_mm)
@@ -1015,8 +1242,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         print(f"Saved {num_steps} frames each for camera1, camera2 and camera3 into {out_dir}/")
 
         # Generate reverse videos
-        cam1_video = os.path.join(out_dir, "camera1_reverse.mp4")
-        cam2_video = os.path.join(out_dir, "camera2_reverse.mp4")
+        # cam1_video = os.path.join(out_dir, "camera1_reverse.mp4")
+        # cam2_video = os.path.join(out_dir, "camera2_reverse.mp4")
         cam3_video = os.path.join(out_dir, "camera3_reverse.mp4")
 
         fps = 20  # adjust playback speed
@@ -1024,31 +1251,33 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # Reverse order of steps
         reversed_steps = list(range(num_steps - 1, -1, -1))
 
-        with imageio.get_writer(cam1_video, fps=fps) as writer:
-            for step in reversed_steps:
-                frame = imageio.imread(os.path.join(cam1_dir, f"step{step:03d}.png"))
-                writer.append_data(frame)
+        # with imageio.get_writer(cam1_video, fps=fps) as writer:
+        #     for step in reversed_steps:
+        #         frame = imageio.imread(os.path.join(cam1_dir, f"step{step:03d}.png"))
+        #         writer.append_data(frame)
 
-        with imageio.get_writer(cam2_video, fps=fps) as writer:
-            for step in reversed_steps:
-                frame = imageio.imread(os.path.join(cam2_dir, f"step{step:03d}.png"))
-                writer.append_data(frame)
+        # with imageio.get_writer(cam2_video, fps=fps) as writer:
+        #     for step in reversed_steps:
+        #         frame = imageio.imread(os.path.join(cam2_dir, f"step{step:03d}.png"))
+        #         writer.append_data(frame)
 
         with imageio.get_writer(cam3_video, fps=fps) as writer:
+            # for step in reversed_steps[-self.cfg_task.env.disassemble_sim_steps:]:
             for step in reversed_steps:
                 frame = imageio.imread(os.path.join(cam3_dir, f"step{step:03d}.png"))
                 writer.append_data(frame)
 
-        print(f"Generated reverse videos: {cam1_video}, {cam2_video}, {cam3_video}")
+        # print(f"Generated reverse videos: {cam1_video}, {cam2_video}, {cam3_video}")
     
     def _save_log_traj(self):
-        if len(self.log_arm_dof_pos) > self.cfg_task.env.num_log_traj:
+        if len(self.log_arm_dof_pos) > -1:
+        # if len(self.log_arm_dof_pos) > self.cfg_task.env.num_log_traj:
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                self.cfg_task.env.desired_subassemblies[0] + '_disassembly_traj.h5'
+                self.cfg_task.env.desired_subassemblies[0] + f"_disassembly_traj_{self.cfg['seed']}_rgb_0928_dagger.h5"
             )
-
+            print(f"Logging Run {self.cfg['seed']}")
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
                 f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
@@ -1060,17 +1289,29 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 f.create_dataset("init_plug_quat", data=np.array(self.log_init_plug_quat))
                 f.create_dataset("plug_pos", data=np.array(self.log_plug_pos))
                 f.create_dataset("plug_quat", data=np.array(self.log_plug_quat))
-
                 # # ---- RGBD (already numpy arrays) ----
-                # f.create_dataset("camera1_rgb", data=np.array(self.camera1_rgb_traj), compression="gzip", compression_opts=4)
-                # f.create_dataset("camera2_rgb", data=np.array(self.camera2_rgb_traj), compression="gzip", compression_opts=4)
-                # f.create_dataset("camera1_depth", data=np.array(self.camera1_depth_traj), compression="gzip", compression_opts=4)
-                # f.create_dataset("camera2_depth", data=np.array(self.camera2_depth_traj), compression="gzip", compression_opts=4)
-
+                print("Saving RGBD")
+                # cam1_rgb = np.stack(self.camera1_rgb_traj, axis=0).astype(np.uint8)   # (180, N, H, W, 3)
+                # cam2_rgb = np.stack(self.camera2_rgb_traj, axis=0).astype(np.uint8)
+                cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)
+                # cam1_depth = np.stack(self.camera1_depth_traj, axis=0).astype(np.float32)  # (180, N, H, W)
+                # cam2_depth = np.stack(self.camera2_depth_traj, axis=0).astype(np.float32)
+                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)
+                print("Finish Converting")
+                # Save with compression
+                # f.create_dataset("camera1_rgb", data=cam1_rgb, compression="gzip", compression_opts=4)
+                # f.create_dataset("camera2_rgb", data=cam2_rgb, compression="gzip", compression_opts=4)
+                f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4)
+                # f.create_dataset("camera1_depth", data=cam1_depth, compression="gzip", compression_opts=4)
+                # f.create_dataset("camera2_depth", data=cam2_depth, compression="gzip", compression_opts=4)
+                f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4)
+                print("Finishing Saving RGBD")
             print(f"Saved trajectory to {log_filename}")
             self.save_first_env_images()
-            exit(0)
+            os._exit(0)
         else:
+            self.save_first_env_images()
             print("current logging item num: ", len(self.log_arm_dof_pos))
+            os._exit(0)
             
         

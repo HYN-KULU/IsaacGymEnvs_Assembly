@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from dataset.diffusion_policy_dataset import DepthActionDataset
 from policy.diffusion_policy import Diffusion_Policy
-import numpy as np
+
 # -------------------
 # Utility: unnormalize delta pos
 # -------------------
@@ -62,16 +62,17 @@ if __name__ == "__main__":
     state_dict = torch.load(ckpt_path, map_location=device)
     policy.load_state_dict(state_dict, strict=True)
     policy.eval()
+
     # Predict actions
     with torch.no_grad():
-        pred_actions = policy(depth=depth.cuda(), proprioception=proprio.cuda(), actions=None).cuda()
+        pred_actions = policy(depth=depth.cuda(), proprioception=proprio.cuda(), actions=None)
     # import pdb;pdb.set_trace()
     # Unnormalize if dataset provides min/max
-    if hasattr(dataset, "pos_min") and hasattr(dataset, "pos_max"):
-        pos_min = torch.tensor(dataset.pos_min, dtype=torch.float32).cuda()
-        pos_max = torch.tensor(dataset.pos_max, dtype=torch.float32).cuda()
+    if hasattr(dataset, "action_min") and hasattr(dataset, "action_max"):
+        pos_min = torch.tensor(dataset.pos_min, dtype=torch.float32)
+        pos_max = torch.tensor(dataset.pos_max, dtype=torch.float32)
         pred_actions = unnormalize_actions(pred_actions, pos_min, pos_max)
-        gt_actions = unnormalize_actions(gt_actions.cuda(), pos_min, pos_max)
+        gt_actions = unnormalize_actions(gt_actions, pos_min, pos_max)
 
     # -------------------
     # Print results
@@ -82,12 +83,6 @@ if __name__ == "__main__":
         for k in range(min(K, 5)):  # only show first 5 steps for clarity
             gt = gt_actions[b, k].cpu().numpy()
             pred = pred_actions[b, k].cpu().numpy()
-
-            # format with 5 decimals, no scientific notation
-            gt_str = np.array2string(gt, precision=5, suppress_small=True, floatmode="fixed")
-            pred_str = np.array2string(pred, precision=5, suppress_small=True, floatmode="fixed")
-
-            print(f"Step {k:02d} | GT: {gt_str} | Pred: {pred_str}")
+            print(f"Step {k:02d} | GT: {gt.round(3)} | Pred: {pred.round(3)}")
 
     print("\nDone.")
-    import pdb;pdb.set_trace()
