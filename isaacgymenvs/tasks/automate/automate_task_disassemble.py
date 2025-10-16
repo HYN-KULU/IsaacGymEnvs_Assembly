@@ -35,7 +35,7 @@ Collect disassembly paths for given assets (no RL training).
 Can be executed with python train.py task=AutoMateTaskDisassemble.
 """
 
-
+import cv2
 import hydra
 import numpy as np
 import omegaconf
@@ -60,7 +60,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from scipy.spatial.transform import Rotation as R
 import torch.nn.functional as F
-
+from gripper_utils import *
+VISUALIZE_RGB=False
 def quat_to_matrix(q):
     """Convert Isaac Gym gymapi.Quat to 3x3 rotation matrix"""
     x, y, z, w = q.x, q.y, q.z, q.w
@@ -465,15 +466,16 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.disable_gravity()
 
         self._reset_object(env_ids)
+        self.init_plug_root_state = self.root_state[self.plug_actor_ids_sim.long(), :7].clone()
         self.simulate_and_refresh()
 
         self.reset_buf[env_ids] = 0
         self.progress_buf[env_ids] = 0
-
+       
         self._move_gripper_to_plug_grasp_pose(env_ids, mode='pre_grasp', sim_steps=self.cfg_task.env.move_gripper_sim_steps)
-
+        
         self._move_gripper_to_plug_grasp_pose(env_ids, mode='grasp', sim_steps=self.cfg_task.env.move_gripper_sim_steps)
-
+                
         self.close_gripper(sim_steps=self.cfg_task.env.close_gripper_sim_steps)
 
         self.enable_gravity()
@@ -529,7 +531,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # Set plug and socket orientation to be upright
         self.root_quat[env_ids, self.plug_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
         self.root_quat[env_ids, self.socket_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
-
         plug_socket_actor_ids_sim = torch.cat((self.plug_actor_ids_sim[env_ids], self.socket_actor_ids_sim[env_ids]), dim=0)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_state),
@@ -949,17 +950,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
             # Step simulation
             self.gym.simulate(self.sim)
-            # print(self.fingertip_centered_pos[0], if_log)
-            # if close_gripper:
-            #     self._apply_actions_as_ctrl_targets(actions=actions,
-            #                                         ctrl_target_gripper_dof_pos=0.0,
-            #                                         do_scale=False)
-            # else:
-            #     self._apply_actions_as_ctrl_targets(actions=actions,
-            #                                         ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
-            #                                         do_scale=False)
-
-            # self.gym.simulate(self.sim)
+            # print(self.fingertip_centered_pos[3], self.fingertip_centered_quat[3])
+            # print(self.plug_pos[3], self.plug_quat[3])
             if if_log:
                 self.gym.fetch_results(self.sim,False)
                 self.gym.step_graphics(self.sim)
@@ -1031,10 +1023,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                         ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
                         for env_id in range(len(self.env_ptrs))
                     }
-                    # futures.update({
-                    #     ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
-                    #     for env_id in range(len(self.env_ptrs))
-                    # })
+                    if VISUALIZE_RGB:
+                        futures.update({
+                            ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
+                            for env_id in range(len(self.env_ptrs))
+                        })
                     # futures.update({
                     #     ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
                     #     for env_id in range(len(self.env_ptrs))
@@ -1058,13 +1051,16 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     # camera1_depth_list.append(futures[("top", "depth", env_id)].result())
                     # camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
                     # camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
-                    # camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
+                    if VISUALIZE_RGB:
+                        camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
                     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
 
                 # # Convert to arrays if desired
                 # self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
                 # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
-                # self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
+                if VISUALIZE_RGB:
+                    self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
+
                 # self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
                 # self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
                 self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
@@ -1111,31 +1107,45 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         if_intersect = np.ones(self.num_envs, dtype=np.float32)
 
         env_ids = np.argwhere(if_intersect==1).reshape(-1)
-        self._lift_gripper(self.disassembly_dists * 3.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
-        self.simulate_and_refresh()
-        if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
+        # Random height, and steps num proportion to distance 0.02 * 3 = 0.06 ~ 60 steps
+        # Go higher, maybe better, more distance to fit the orientation?
+        # self._lift_gripper(self.disassembly_dists * 4.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
+        # self.simulate_and_refresh()
+        # if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
 
-        env_ids = np.argwhere(if_intersect==0).reshape(-1)
+        # env_ids = np.argwhere(if_intersect==0).reshape(-1)
         self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=True, close_gripper=True)
 
-    def disassemble_plug_dagger_generate_trajectory(self, ctrl_tgt_pos=None, ctrl_tgt_quat=None):
+    def disassemble_plug_dagger_generate_trajectory(self, ctrl_tgt_pos=None, ctrl_tgt_quat=None, ctrl_plug_pos = None, ctrl_plug_quat = None):
         ## First lift up the gripper
         if_intersect = torch.ones(self.num_envs, device='cuda', dtype=torch.float32)
         env_ids = torch.nonzero(if_intersect == 1).view(-1)
-        current_env_plug_pos=self.plug_pos.clone()
-        current_env_plug_quat=self.plug_quat.clone()
-
-        current_env_plug_pos[:,2]=0.4189 + 0.003
-        self.disassemble_plug_dagger_update(current_env_plug_pos,current_env_plug_quat)
-        # import pdb;pdb.set_trace()
-        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 30, if_log=True, close_gripper=True)
-        # self.disassemble_plug_dagger_update(ctrl_tgt_plug_pos,ctrl_tgt_plug_quat)
+        target_plug_pos=self.init_plug_root_state[:,:3]
+        target_plug_pos[:,2] +=0.025 / 2
+        target_plug_quat=self.init_plug_root_state[:,3:]
+        for i in range(10):
+            target_gripper_pos, target_gripper_quat = compute_target_gripper_pose(current_plug_pos=self.plug_pos, current_plug_quat = self.plug_quat, target_plug_pos = target_plug_pos, target_plug_quat=target_plug_quat, current_gripper_pos = self.fingertip_centered_pos, current_gripper_quat = self.fingertip_centered_quat)
+            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 30, if_log=False, close_gripper=True)
+        target_plug_pos[:,2] +=0.02
+        target_plug_quat=self.init_plug_root_state[:,3:]
+        for i in range(1):
+            target_gripper_pos, target_gripper_quat = compute_target_gripper_pose(current_plug_pos=self.plug_pos, current_plug_quat = self.plug_quat, target_plug_pos = target_plug_pos, target_plug_quat=target_plug_quat, current_gripper_pos = self.fingertip_centered_pos, current_gripper_quat = self.fingertip_centered_quat)
+            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 50, if_log=True, close_gripper=True)
+        for i in range(1):
+            target_gripper_pos, target_gripper_quat = compute_target_gripper_pose(current_plug_pos=self.plug_pos, current_plug_quat = self.plug_quat, target_plug_pos = ctrl_plug_pos, target_plug_quat=ctrl_plug_quat, current_gripper_pos = self.fingertip_centered_pos, current_gripper_quat = self.fingertip_centered_quat)
+            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 30, if_log=True, close_gripper=True)
+        # images=self.get_wrist_camera_visuals()
+        # image=images[0]
+        # image= np.rot90(image, 2)
+        # imageio.imwrite(f"inspect.png", image.astype(np.uint8))
+        # self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 30, if_log=True, close_gripper=True)
         self._log_robot_state(env_ids)
         self._log_object_state(env_ids)
+
         self._save_log_traj()
 
 
-    def disassemble_plug_dagger_update(self, ctrl_tgt_plug_pos=None, ctrl_tgt_plug_quat=None):
+    def disassemble_plug_dagger_update(self, ctrl_tgt_plug_pos=None, ctrl_tgt_plug_quat=None, steps=60):
         if_intersect = torch.ones(self.num_envs, device='cuda', dtype=torch.float32)
         env_ids = torch.nonzero(if_intersect == 1).view(-1)        
         # current poses
@@ -1157,11 +1167,25 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             env_ids,
             ctrl_tgt_gripper_pos,
             ctrl_tgt_gripper_quat,
-            60,
+            steps,
             if_log=True,
             close_gripper=True
         )
-        
+    
+    def disassemble_plug_from_socket_error_state(self, ctrl_tgt_pos=None, ctrl_tgt_quat=None, ctrl_plug_pos = None, ctrl_plug_quat = None):
+        if_intersect = torch.ones(self.num_envs, device='cuda', dtype=torch.float32)
+        env_ids = torch.nonzero(if_intersect == 1).view(-1)
+        target_plug_pos=self.init_plug_root_state[:,:3]
+        target_plug_pos[:,2] +=0.025 / 2
+        target_plug_quat=self.init_plug_root_state[:,3:]
+        for i in range(10):
+            target_gripper_pos, target_gripper_quat = compute_target_gripper_pose(current_plug_pos=self.plug_pos, current_plug_quat = self.plug_quat, target_plug_pos = target_plug_pos, target_plug_quat=target_plug_quat, current_gripper_pos = self.fingertip_centered_pos, current_gripper_quat = self.fingertip_centered_quat)
+            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 30, if_log=False, close_gripper=True)
+        target_plug_pos[:,2] +=0.02
+        target_plug_quat=self.init_plug_root_state[:,3:]
+        for i in range(1):
+            target_gripper_pos, target_gripper_quat = compute_target_gripper_pose(current_plug_pos=self.plug_pos, current_plug_quat = self.plug_quat, target_plug_pos = target_plug_pos, target_plug_quat=target_plug_quat, current_gripper_pos = self.fingertip_centered_pos, current_gripper_quat = self.fingertip_centered_quat)
+            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 50, if_log=True, close_gripper=True)
 
     def disassemble_plug_from_socket_eval_init(self):
         """Lift plug from socket till disassembly and then randomize end-effector pose."""
@@ -1169,11 +1193,12 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         if_intersect = np.ones(self.num_envs, dtype=np.float32)
 
         env_ids = np.argwhere(if_intersect==1).reshape(-1)
-        self._lift_gripper_eval_init(self.disassembly_dists * 3.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
+        # self._lift_gripper_eval_init(self.disassembly_dists * 4.0, self.cfg_task.env.disassemble_sim_steps, env_ids)
         self.simulate_and_refresh()
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
 
-        env_ids = np.argwhere(if_intersect==0).reshape(-1)
+        # env_ids = np.argwhere(if_intersect==0).reshape(-1)
+        print(env_ids)
         self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=False, close_gripper=True)
 
     def _lift_gripper_eval_init(self, lift_distance, sim_steps, env_ids=None):
@@ -1212,15 +1237,15 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         """Move gripper to a random target pose with smooth motion (no per-step noise)."""
 
         # ---- Step 1: Randomize target position ----
-        ctrl_tgt_pos = torch.empty_like(self.plug_grasp_pos).copy_(self.plug_grasp_pos)
-        ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset
+        ctrl_tgt_pos = torch.empty_like(self.fingertip_centered_pos).copy_(self.fingertip_centered_pos)
+        ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset # 0.05 
         # Sample random offset ONCE (no per-step jitter)
         rand_pos_offset = (2 * torch.rand((self.num_envs, 3), device=self.device) - 1.0)
         rand_pos_offset = rand_pos_offset @ torch.diag(
             torch.tensor(self.cfg_task.randomize.gripper_rand_pos_noise, device=self.device)
-        )
+        ) # 0.05
         ctrl_tgt_pos += rand_pos_offset
-
+        ctrl_tgt_pos[:,2] += self.disassembly_dists * 4.0
         # ---- Step 2: Randomize target rotation ----
         base_euler = torch.tensor(
             self.cfg_task.randomize.fingertip_centered_rot_initial, device=self.device
@@ -1235,9 +1260,17 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             ctrl_target_euler[:, 0], ctrl_target_euler[:, 1], ctrl_target_euler[:, 2]
         )
 
-        # ---- Step 3: Move smoothly toward target ----
-        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
-        # self._move_gripper_to_eef_pose(env_ids,torch.tensor([-0.0362,-0.0463,0.5208]).cuda(),torch.tensor([0.9973,-0.0421,-0.0358,-0.04789]).cuda(),sim_steps=120,if_log=True,close_gripper=True)
+        up_tgt=self.fingertip_centered_pos.clone()
+        up_tgt[:,2] = ctrl_tgt_pos[:,2]
+        self._move_gripper_to_eef_pose(env_ids, up_tgt, self.fingertip_centered_quat.clone(), 80, if_log, close_gripper)
+        # Second, Move hotizontally
+        self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,self.fingertip_centered_quat.clone(),60, if_log, close_gripper)
+        # Third, Orient, Rotate
+        self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,ctrl_tgt_quat,60, if_log, close_gripper)
+
+        # self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
+        # self._move_gripper_to_eef_pose(env_ids, self.fingertip_centered_pos.clone(), ctrl_tgt_quat, 30, if_log, close_gripper)
+        # Translating Step According to distance: 0.06 ~ 60 steps
 
 
     def _apply_actions_as_ctrl_targets(self, actions, ctrl_target_gripper_dof_pos, do_scale):
@@ -1376,7 +1409,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         fps = 20  # adjust playback speed
 
         # Reverse order of steps
-        reversed_steps = list(range(num_steps - 1, num_steps-40 -1, -1))
+        reversed_steps = list(range(num_steps - 1, -1, -1))
+        # reversed_steps = list(range(num_steps - 1, num_steps - 40 -1, -1))
 
         # with imageio.get_writer(cam1_video, fps=fps) as writer:
         #     for step in reversed_steps:
@@ -1392,6 +1426,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # for step in reversed_steps[-self.cfg_task.env.disassemble_sim_steps:]:
             for step in reversed_steps:
                 frame = imageio.imread(os.path.join(cam3_dir, f"step{step:03d}.png"))
+                frame = cv2.rotate(frame, cv2.ROTATE_180)  
                 writer.append_data(frame)
 
         # print(f"Generated reverse videos: {cam1_video}, {cam2_video}, {cam3_video}")
@@ -1402,14 +1437,14 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "depth_relative_dagger_1004",
+                "depth_relative_1014_DAgger",
                 self.cfg_task.env.desired_subassemblies[0] + f"_disassembly_traj_{self.cfg['seed']}.h5"
             )
             print(f"Logging Run {self.cfg['seed']}")
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
-                f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
-                f.create_dataset("fingertip_centered_quat", data=np.array(self.log_fingertip_centered_quat))
+                f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos)[:,-40:,:])
+                f.create_dataset("fingertip_centered_quat", data=np.array(self.log_fingertip_centered_quat)[:,-40:,:])
                 # f.create_dataset("arm_dof_pos", data=np.array(self.log_arm_dof_pos))
                 # f.create_dataset("plug_grasp_pos", data=np.array(self.log_plug_grasp_pos))
                 # f.create_dataset("plug_grasp_quat", data=np.array(self.log_plug_grasp_quat))
@@ -1421,10 +1456,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 print("Saving RGBD")
                 # cam1_rgb = np.stack(self.camera1_rgb_traj, axis=0).astype(np.uint8)   # (180, N, H, W, 3)
                 # cam2_rgb = np.stack(self.camera2_rgb_traj, axis=0).astype(np.uint8)
-                # cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)
+                if VISUALIZE_RGB:
+                    cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)
                 # cam1_depth = np.stack(self.camera1_depth_traj, axis=0).astype(np.float32)  # (180, N, H, W)
                 # cam2_depth = np.stack(self.camera2_depth_traj, axis=0).astype(np.float32)
-                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)
+                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[-30:,:,:,:]
                 print("Finish Converting")
                 # Save with compression
                 # f.create_dataset("camera1_rgb", data=cam1_rgb, compression="gzip", compression_opts=4)
@@ -1435,11 +1471,12 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4)
                 # print("Finishing Saving RGBD")
             print(f"Saved trajectory to {log_filename}")
-            # self.save_first_env_images()
+            if VISUALIZE_RGB:
+                self.save_first_env_images(index=2)
             # import pdb;pdb.set_trace()
             # pos=np.load("error_pos.npy")
             # current_pos=self.fingertip_centered_pos[0]
-            
+            # import pdb;pdb.set_trace()
             os._exit(0)
         else:
             self.save_first_env_images()

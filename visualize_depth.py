@@ -12,12 +12,18 @@ fps = 20
 files = [f"depth_{i}.npy" for i in range(180)]
 
 frames = []
+
 for f in files:
     depth = np.load(os.path.join(depth_dir, f))
+    
+    # ✅ clip invalid far-away depth values
+    depth = np.clip(depth, -0.5, 0.0)   # keep range [-0.5, 0]
+    
     # normalize to 0-255 for visualization
     depth_min, depth_max = depth.min(), depth.max()
     depth_vis = (depth - depth_min) / (depth_max - depth_min + 1e-8)
     depth_vis = (depth_vis * 255).astype(np.uint8)
+    
     # apply colormap for better visualization
     depth_color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_PLASMA)
     frames.append(depth_color)

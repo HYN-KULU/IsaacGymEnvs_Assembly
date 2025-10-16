@@ -43,7 +43,7 @@ if __name__=="__main__":
     
     for hdf_id in range(8):
         print(hdf_id)
-        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/asset_00681_disassembly_traj_{hdf_id}_rgb_0928_dagger.h5")
+        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/asset_00681_disassembly_traj_{hdf_id}_rgb_0929_recovery.h5")
         print(data["fingertip_centered_pos"].shape)
         # quat=data["fingertip_centered_quat"] # 12 * 180 * 4
         # pos=data["fingertip_centered_pos"] # 12 * 180 * 3
@@ -62,6 +62,10 @@ if __name__=="__main__":
                 T = pos_env_i.shape[0]
             except:
                 import pdb;pdb.set_trace()
+            arr = data["fingertip_centered_pos"][0]
+            np.set_printoptions(precision=6, suppress=True)  # precision=小数位数, suppress=True 禁止科学计数法
+            print(arr.astype(float))
+            import pdb;pdb.set_trace()
             for step in range(50):  # include all timesteps
                 # proprioception: current absolute pose (3+6)
                 proprioception = tcp_rotation_6d_env_i[step] # (9,)

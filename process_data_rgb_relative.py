@@ -5,9 +5,8 @@ from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, app
 def load_processed_dataset(filename):
     import h5py
     data = {}
-    import pdb;pdb.set_trace()
     with h5py.File(filename, "r") as f:
-        data["depth"] = f["depth"][()]               # (N, H, W)
+        # data["depth"] = f["depth"][()]               # (N, H, W)
         data["proprioception"] = f["proprioception"][()]  # (N, 9)
         data["actions"] = f["actions"][()]           # (N, K, 9)
     return data
@@ -25,7 +24,6 @@ def read_from_hdf5(filename):
             except Exception as e:
                 print(f"Could not read {key}: {e}")
     return data
-
 if __name__=="__main__":
     ### Read the dataset, preprocess the dataset by saving the action chunks paired with depth image observation, and proprioception of current pos and rotation_6d
     ### Action Padding
@@ -35,19 +33,28 @@ if __name__=="__main__":
     # o0=a0 o1=a1 ...... ot=at
     # So each step, given oi and ai, predict ai-1 to ai-k
     K=10
-    proprioception_list=[]
+    # data=load_processed_dataset("processed_dataset_rgb_absolute_actions_0927.h5")
+    # proprioception_list=[]
+    # rgb_list=[]
+    # action_list=[]
+    proprioception_list=data["proprioception"].tolist()
     rgb_list=[]
-    action_list=[]
+    action_list=data["actions"].tolist()
+    
     for hdf_id in range(12):
         print(hdf_id)
         data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/rgb_depth_1002/asset_00681_disassembly_traj_{hdf_id}.h5")
         print(data["fingertip_centered_pos"].shape)
+        # quat=data["fingertip_centered_quat"] # 12 * 180 * 4
+        # pos=data["fingertip_centered_pos"] # 12 * 180 * 3
+        # depth=data["camera3_depth"] # shape 180 * 12 * 480 * 640
         quat = data["fingertip_centered_quat"][:, ::-1, :]   # reverse time (T=180)
         pos  = data["fingertip_centered_pos"][:, ::-1, :]
+        # rgb = data["camera3_rgb"][::-1]
         tcp=np.concatenate([pos,quat],axis=2)
         tcp_rotation_6d=xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")
 
-            
+        
         for i in range(tcp_rotation_6d.shape[0]):
             pos_env_i=pos[i]
             tcp_rotation_6d_env_i=tcp_rotation_6d[i]
@@ -55,18 +62,25 @@ if __name__=="__main__":
                 T = pos_env_i.shape[0]
             except:
                 import pdb;pdb.set_trace()
+            arr = data["fingertip_centered_pos"][0]
+            np.set_printoptions(precision=6, suppress=True)  # precision=小数位数, suppress=True 禁止科学计数法
+            print(arr.astype(float))
             for step in range(T):  # include all timesteps
+                # proprioception: current absolute pose (3+6)
                 proprioception = tcp_rotation_6d_env_i[step] # (9,)
-                depth = data["camera3_depth"][T-1-step][i] 
+                # import pdb;pdb.set_trace()
+                # rgb at current step
+                rgb = data["camera3_rgb"][T-1-step][i]  # (480, 640, 3)
+
                 future_actions = []
                 for j in range(1, K+1):
                     if step + j < T:
-                        current_pos=pos_env_i[step+j]
-                        rot6d = tcp_rotation_6d_env_i[step+j][3:]                 # (6,)
+                        delta_pos = pos_env_i[step+j] - pos_env_i[step+j-1]   # (3,)
+                        rot6d = tcp_rotation_6d_env_i[step+j][3:]-tcp_rotation_6d_env_i[step+j-1][3:]                 # (6,)
                     else:
-                        current_pos=pos_env_i[T-1]
-                        rot6d = tcp_rotation_6d_env_i[-1][3:]  # repeat last rotation
-                    action_j = np.concatenate([current_pos, rot6d])  # (9,)
+                        delta_pos = np.zeros(3, dtype=np.float32)
+                        rot6d = np.zeros(6, dtype=np.float32)  # repeat last rotation
+                    action_j = np.concatenate([delta_pos, rot6d])  # (9,)
                     future_actions.append(action_j)
 
                 # final target shape: (K, 9)
@@ -75,7 +89,7 @@ if __name__=="__main__":
                 action_list.append(action_target)
                 proprioception_list.append(proprioception)
                 # rgb_list.append(rgb)
-                np.save(f"data/depth_absolute/depth_{len(action_list)-1}.npy",depth)
+                np.save(f"data/rgb_relative_1004/rgb_{len(action_list)-1}.npy",rgb)
                 # print(len(action_list))
     
     rgb_array = np.array(rgb_list, dtype=np.float32)               # shape (N, 480, 640)
@@ -88,7 +102,7 @@ if __name__=="__main__":
     print("Actions:", action_array.shape)
 
     # Save to HDF5
-    out_filename = "processed_dataset_rgb_absolute_actions_1003_depth_absolute.h5"
+    out_filename = "processed_dataset_rgb_relative_actions_1004.h5"
     with h5py.File(out_filename, "w") as f:
         # f.create_dataset("depth", data=depth_array, chunks=(1, 480, 640), compression="gzip", compression_opts=4)
         f.create_dataset("proprioception", data=proprio_array, compression="gzip", compression_opts=4)

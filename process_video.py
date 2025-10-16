@@ -1,0 +1,1 @@
+video_path="/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/output_video_7.mp4"

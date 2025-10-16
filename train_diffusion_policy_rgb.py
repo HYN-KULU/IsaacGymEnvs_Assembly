@@ -27,7 +27,7 @@ default_args = edict({
     "ckpt_dir": "logs/policy_ckpt",
     "resume_ckpt": None,
     "resume_epoch": -1,
-    "lr": 3e-4,
+    "lr": 3e-4 * 8,
     "batch_size": 128,
     "num_epochs": 100,
     "save_epochs": 10,

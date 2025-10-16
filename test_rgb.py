@@ -100,7 +100,6 @@ def inspect_sample(idx,pos_min,pos_max):
     rgb = torch.tensor(sample["rgb"], dtype=torch.float32).unsqueeze(0).to(device)
     proprio = torch.tensor(sample["proprioception"], dtype=torch.float32).unsqueeze(0).to(device)
     gt_actions = torch.tensor(sample["actions"], dtype=torch.float32).unsqueeze(0).to(device)
-    import pdb;pdb.set_trace()
     with torch.no_grad():
         pred_actions = policy(rgb=rgb, proprioception=proprio, actions=None)
     pred_actions = unnormalize_actions(pred_actions, pos_min, pos_max)
@@ -134,8 +133,7 @@ def inspect_sample(idx,pos_min,pos_max):
 # -------------------
 if __name__ == "__main__":
     # Load dataset
-    dataset = DepthActionDataset("processed_dataset_rgb_absolute_actions_0927.h5")
-    # dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    dataset = DepthActionDataset("processed_dataset_rgb_absolute_actions_0928_dagger.h5", obs_dir="data/absolute_rgb_dagger")
     device="cuda"
     # # Take one batch
     # batch = next(iter(dataloader))
@@ -144,7 +142,7 @@ if __name__ == "__main__":
     # gt_actions = batch["actions"]        # (B, K, 9)
 
 
-    ckpt_path = "logs/automate/diffusion_policy_ckpt_rgb_absolute_actions_0927/policy_epoch_1000.ckpt"  # or policy_last.ckpt
+    ckpt_path = "logs/automate/diffusion_policy_rgb_absolute_actions_0928_dagger_ckpt/policy_last.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -159,7 +157,7 @@ if __name__ == "__main__":
     pos_min = torch.tensor(dataset.pos_min, dtype=torch.float32).cuda()
     pos_max = torch.tensor(dataset.pos_max, dtype=torch.float32).cuda()
 
-    # import pdb;pdb.set_trace()
+    import pdb;pdb.set_trace()
     # idx=0
     inspect_sample(0,pos_min,pos_max)
 
