@@ -478,7 +478,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 
         self.close_gripper(sim_steps=self.cfg_task.env.close_gripper_sim_steps)
 
-        self.enable_gravity()
+        # self.enable_gravity()
 
         self._init_log_data_per_episode()
 
@@ -1240,12 +1240,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         ctrl_tgt_pos = torch.empty_like(self.fingertip_centered_pos).copy_(self.fingertip_centered_pos)
         ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset # 0.05 
         # Sample random offset ONCE (no per-step jitter)
-        rand_pos_offset = (2 * torch.rand((self.num_envs, 3), device=self.device) - 1.0)
-        rand_pos_offset = rand_pos_offset @ torch.diag(
-            torch.tensor(self.cfg_task.randomize.gripper_rand_pos_noise, device=self.device)
-        ) # 0.05
+        rand_pos_offset = torch.zeros((self.num_envs, 3), device=self.device)
+        rand_pos_offset[:, 0:2] = 0.02 * torch.rand((self.num_envs, 2), device=self.device) - 0.01  # x,y ∈ [-0.02, 0.02]
+        rand_pos_offset[:, 2] = 0.01 * torch.rand((self.num_envs,), device=self.device)  
         ctrl_tgt_pos += rand_pos_offset
-        ctrl_tgt_pos[:,2] += self.disassembly_dists * 4.0
+        ctrl_tgt_pos[:,2] += self.disassembly_dists * 3.0
         # ---- Step 2: Randomize target rotation ----
         base_euler = torch.tensor(
             self.cfg_task.randomize.fingertip_centered_rot_initial, device=self.device
@@ -1261,15 +1260,17 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         )
 
         up_tgt=self.fingertip_centered_pos.clone()
-        up_tgt[:,2] = ctrl_tgt_pos[:,2]
+        up_tgt[:,2] = self.fingertip_centered_pos[:,2] + self.disassembly_dists * 3.0
         self._move_gripper_to_eef_pose(env_ids, up_tgt, self.fingertip_centered_quat.clone(), 80, if_log, close_gripper)
         # Second, Move hotizontally
-        self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,self.fingertip_centered_quat.clone(),60, if_log, close_gripper)
+        # self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,self.fingertip_centered_quat.clone(),60, if_log, close_gripper)
         # Third, Orient, Rotate
-        self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,ctrl_tgt_quat,60, if_log, close_gripper)
-
+        # self._move_gripper_to_eef_pose(env_ids,ctrl_tgt_pos,ctrl_tgt_quat,60, if_log, close_gripper)
+        # self._move_gripper_to_eef_pose(env_ids, up_tgt, self.fingertip_centered_quat.clone(),60, if_log, close_gripper)
         # self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log, close_gripper)
-        # self._move_gripper_to_eef_pose(env_ids, self.fingertip_centered_pos.clone(), ctrl_tgt_quat, 30, if_log, close_gripper)
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, self.fingertip_centered_quat.clone(), 60, if_log, close_gripper)
+        # print(ctrl_tgt_pos)
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 40, if_log, close_gripper)
         # Translating Step According to distance: 0.06 ~ 60 steps
 
 
@@ -1437,14 +1438,15 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "depth_relative_1014_DAgger",
-                self.cfg_task.env.desired_subassemblies[0] + f"_disassembly_traj_{self.cfg['seed']}.h5"
+                "depth_relative_1027_closer",
+                f"disassembly_traj_{self.cfg['seed']}.h5"
             )
             print(f"Logging Run {self.cfg['seed']}")
+            steps=40
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
-                f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos)[:,-40:,:])
-                f.create_dataset("fingertip_centered_quat", data=np.array(self.log_fingertip_centered_quat)[:,-40:,:])
+                f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
+                f.create_dataset("fingertip_centered_quat", data=np.array(self.log_fingertip_centered_quat))
                 # f.create_dataset("arm_dof_pos", data=np.array(self.log_arm_dof_pos))
                 # f.create_dataset("plug_grasp_pos", data=np.array(self.log_plug_grasp_pos))
                 # f.create_dataset("plug_grasp_quat", data=np.array(self.log_plug_grasp_quat))
@@ -1460,7 +1462,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)
                 # cam1_depth = np.stack(self.camera1_depth_traj, axis=0).astype(np.float32)  # (180, N, H, W)
                 # cam2_depth = np.stack(self.camera2_depth_traj, axis=0).astype(np.float32)
-                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[-30:,:,:,:]
+                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)
                 print("Finish Converting")
                 # Save with compression
                 # f.create_dataset("camera1_rgb", data=cam1_rgb, compression="gzip", compression_opts=4)
@@ -1468,15 +1470,15 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4)
                 # f.create_dataset("camera1_depth", data=cam1_depth, compression="gzip", compression_opts=4)
                 # f.create_dataset("camera2_depth", data=cam2_depth, compression="gzip", compression_opts=4)
-                f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4)
-                # print("Finishing Saving RGBD")
+                if not VISUALIZE_RGB:
+                    f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4, chunks=True)
             print(f"Saved trajectory to {log_filename}")
             if VISUALIZE_RGB:
                 self.save_first_env_images(index=2)
             # import pdb;pdb.set_trace()
             # pos=np.load("error_pos.npy")
             # current_pos=self.fingertip_centered_pos[0]
-            # import pdb;pdb.set_trace()
+
             os._exit(0)
         else:
             self.save_first_env_images()
