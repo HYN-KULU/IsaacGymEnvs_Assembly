@@ -17,3 +17,13 @@ cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
 make -j$(nproc)
 sudo make install
 sudo ldconfig
+
+
+source prepare.sh to enable the iJIT
+
+
+install pandas, plotly, matplotlib, h5py, numba
+
+cp -r ~/automate/isaacgym ~/isaacgym_local
+export PYTHONPATH=$HOME/isaacgym_local/python
+export LD_LIBRARY_PATH=$HOME/isaacgym_local/python/isaacgym/_bindings/linux-x86_64

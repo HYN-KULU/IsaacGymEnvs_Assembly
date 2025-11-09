@@ -230,6 +230,14 @@ class VecTask(Env):
         self.force_render = force_render
 
         self.sim_params = self.__parse_sim_params(self.cfg["physics_engine"], self.cfg["sim"])
+        # self.sim_params.dt = 0.001          # 1 ms timestep
+        # self.sim_params.substeps = 2        # integrate twice per step
+        # self.sim_params.use_gpu_pipeline = True  # keep on GPU for speed
+        # self.sim_params.physx.solver_type = 1                # 1 = TGS, 0 = PGS
+        # self.sim_params.physx.num_position_iterations = 8
+        # self.sim_params.physx.num_velocity_iterations = 2
+        # self.sim_params.physx.rest_offset = 0.001
+        # self.sim_params.physx.contact_offset = 0.002
         if self.cfg["physics_engine"] == "physx":
             self.physics_engine = gymapi.SIM_PHYSX
         elif self.cfg["physics_engine"] == "flex":

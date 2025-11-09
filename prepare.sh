@@ -1,6 +1,9 @@
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libiomp5.so
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libittnotify.so
 export LD_PRELOAD=/usr/local/lib/libittnotify.so
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export CUDA_HOME=/usr/local/cuda
 export CARB_LOG_LEVEL=error
+# export PYTHONPATH=/home/ubuntu/automate/isaacgym/python:$PYTHONPATH
+# export LD_LIBRARY_PATH=/home/ubuntu/automate/isaacgym/python/isaacgym/_bindings/linux-x86_64:$LD_LIBRARY_PATH
+export PYTHONPATH=$HOME/isaacgym_local/python
+export LD_LIBRARY_PATH=$HOME/isaacgym_local/python/isaacgym/_bindings/linux-x86_64
+export PYTHONPATH=$(pwd):$PYTHONPATH

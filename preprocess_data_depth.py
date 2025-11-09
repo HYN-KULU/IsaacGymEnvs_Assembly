@@ -29,12 +29,12 @@ if __name__=="__main__":
     proprioception_list=[]
     action_list=[]
     depth_id=0
-    for hdf_id in range(50):
+    for hdf_id in range(1):
         print(hdf_id)
-        data=read_from_hdf5(f"/project/flame/yinongh/asset_00681_disassembly_traj_{hdf_id}.h5")        
+        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/automate_1106_multitask/01053/01053disassembly_traj_{hdf_id}.h5")      
         for i in range(data["camera3_depth"].shape[1]):
             T=data["camera3_depth"].shape[0]
             for step in range(T):  # include all timesteps
                 depth = data["camera3_depth"][T-1-step][i]  # (480, 640)
-                np.save(f"data/depth_relative_scale_1010/depth_{depth_id}.npy",depth)
+                np.save(f"data/depth_relative_automate_1106/depth_{depth_id}.npy",depth)
                 depth_id+=1

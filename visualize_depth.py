@@ -4,12 +4,12 @@ import os
 import imageio
 
 # path to your depth files
-depth_dir = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/depth_relative"
+depth_dir = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/depth_relative_automate_1106"
 out_path = "depth_video.mp4"
 fps = 20
 
 # load file list (0 → 179)
-files = [f"depth_{i}.npy" for i in range(180)]
+files = [f"depth_{i}.npy" for i in range(230)]
 
 frames = []
 

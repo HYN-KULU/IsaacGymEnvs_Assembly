@@ -39,16 +39,18 @@ if __name__=="__main__":
     # action_list=data["actions"].tolist()
     proprioception_list=[]
     action_list=[]
-    for hdf_id in range(160):
+    length_list=[]
+    for hdf_id in range(101):
         print(hdf_id)
-        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/depth_relative_1014_DAgger/asset_00681_disassembly_traj_{hdf_id}.h5")
+        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/automate_1106_multitask/00062/disassembly_traj_{hdf_id}.h5")
         print(data["fingertip_centered_pos"].shape)
-
-        quat = data["fingertip_centered_quat"][:,-30:,:][:, ::-1, :]   # reverse time (T=180)
-        pos  = data["fingertip_centered_pos"][:,-30:,:][:, ::-1, :]
+        length_list.append(data["fingertip_centered_pos"].shape[0])
+        if data["fingertip_centered_pos"].shape[0]==0:
+            continue
+        quat = data["fingertip_centered_quat"][:,:,:][:, ::-1, :]   # reverse time (T=180)
+        pos  = data["fingertip_centered_pos"][:,:,:][:, ::-1, :]
         tcp=np.concatenate([pos,quat],axis=2)
         tcp_rotation_6d=xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")
-            
         for i in range(tcp_rotation_6d.shape[0]):
             pos_env_i=pos[i]
             tcp_rotation_6d_env_i=tcp_rotation_6d[i]
@@ -86,7 +88,7 @@ if __name__=="__main__":
     print("Actions:", action_array.shape)
 
     # Save to HDF5
-    out_filename = "processed_dataset_depth_relative_1014_DAgger.h5"
+    out_filename = "processed_dataset_depth_relative_1107_00062.h5"
     with h5py.File(out_filename, "w") as f:
         # f.create_dataset("depth", data=depth_array, chunks=(1, 480, 640), compression="gzip", compression_opts=4)
         f.create_dataset("proprioception", data=proprio_array, compression="gzip", compression_opts=4)

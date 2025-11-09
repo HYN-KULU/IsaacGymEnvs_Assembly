@@ -12,7 +12,14 @@ from dataset.diffusion_policy_dataset import DepthActionDataset
 from policy.diffusion_policy import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
-
+def load_processed_dataset(filename):
+    import h5py
+    data = {}
+    with h5py.File(filename, "r") as f:
+        # data["depth"] = f["depth"][()]               # (N, H, W)
+        data["proprioception"] = f["proprioception"][()]  # (N, 9)
+        data["actions"] = f["actions"][()]           # (N, K, 9)
+    return data
 def unnormalize_actions(actions, pos_min, pos_max, rot_min,rot_max, scale_to_unit=True):
     """
     Undo the normalization from DepthActionDataset.
@@ -42,6 +49,35 @@ def unnormalize_actions(actions, pos_min, pos_max, rot_min,rot_max, scale_to_uni
 
 import imageio
 import numpy as np
+
+def normalize_xy_min_length(delta_pos, i, min_length=0.0005):
+    """
+    Normalize xy direction of delta_pos while keeping magnitude >= min_length.
+
+    Args:
+        delta_pos: (N, 3) torch.Tensor
+        min_length: float, minimum magnitude for xy plane
+
+    Returns:
+        delta_pos_new: (N, 3) torch.Tensor
+    """
+    # 提取 xy 分量
+    min_length=0.001 if i < 100 else 0.0005
+    delta_xy = delta_pos[:, :2]
+
+    # 计算 xy 平面上的长度
+    xy_norm = torch.norm(delta_xy, dim=1, keepdim=True) + 1e-8  # 防止除零
+
+    # 计算需要放大的比例：如果原始长度小于 min_length，就放大
+    scale = torch.where(xy_norm < min_length, min_length / xy_norm, torch.ones_like(xy_norm))
+
+    # 应用缩放到 xy 部分
+    delta_xy_scaled = delta_xy * scale
+
+    # 拼回 z 分量
+    delta_pos_new = torch.cat([delta_xy_scaled, delta_pos[:, 2:]], dim=1)
+    return delta_pos_new
+
 
 def save_video_from_images(image_list, out_path="output_video.mp4", fps=10):
     """
@@ -92,14 +128,24 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_1107_01053.h5")
+    all_actions = data['actions'][()]  # (N, K, 9)
+    delta_pos = all_actions[..., 0:3]  # (N, K, 3)
+    delta_rot = all_actions[...,3:]
+    # delta_pos = all_actions[..., 0:3]  # (N, K, 3)
+    # delta_rot = all_actions[...,3:]
+    pos_min = torch.from_numpy(delta_pos.min(axis=(0, 1))).cuda()
+    pos_max = torch.from_numpy(delta_pos.max(axis=(0, 1))).cuda()
+    rot_min=torch.from_numpy(delta_rot.min(axis=(0,1))).cuda()
+    rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "../logs/automate/diffusion_policy_depth_relative_scale_1010_ckpt/policy_epoch_550.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_depth_relative_1107_01053/policy_last.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
         hidden_dim=512,
-        proprio_dim=9,
+        proprio_dim=7,
         action_dim=9
     ).to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
@@ -110,29 +156,16 @@ def run_env(cfg: DictConfig):
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
     envs.reset_idx(env_ids)
     envs.disassemble_plug_from_socket_eval_init()
+    init_plug_pos = envs.plug_pos.clone()
     save_dir = "eval_visual"
     os.makedirs(save_dir, exist_ok=True)
     envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
     torch.set_printoptions(precision=5, sci_mode=False)
     image_list=[[] for _ in range(12)]
     target_final_pos=torch.tensor([4.3678e-04, 1.3084e-03, 4.5973e-01], device='cuda:0')
-    # target_final_pos=torch.tensor([0.0012, 0.0007, 4.5973e-01], device='cuda:0')
-    ## diffusion_policy_depth_relative_scale_1010_ckpt
-    pos_min=torch.tensor([-0.00059843, -0.00057602, -0.00138021]).cuda()
-    pos_max=torch.tensor([0.00063801, 0.00058579, 0.00010705]).cuda()
-    rot_min=torch.tensor([-4.4080738e-05, -2.0435336e-03, -1.9325964e-03, -2.0965987e-03,-4.0559817e-04, -2.5958335e-03]).cuda()
-    rot_max=torch.tensor([[0.00045417, 0.0020992 , 0.00188186, 0.00202889, 0.00050839, 0.00195071]]).cuda()
-    ### diffusion_policy_depth_relative_procedure_1011
-    # pos_min=torch.tensor([-0.00108457, -0.00101471, -0.00315183]).cuda()
-    # pos_max=torch.tensor([0.00108904, 0.00102508, 0.00226444]).cuda()
-    # rot_min=torch.tensor([-0.00015798, -0.00355991, -0.00262753, -0.00422868, -0.00096861, -0.00706341]).cuda()
-    # rot_max=torch.tensor([0.00105153, 0.00469909, 0.00417167, 0.00350342, 0.00122161, 0.0006893 ]).cuda()
-    # pos_min=torch.tensor([-0.00059843, -0.00057602, -0.00138021]).cuda()
-    # pos_max=torch.tensor([0.00063801, 0.00074742, 0.00010705]).cuda()
-    # rot_min=torch.tensor([-4.8889007e-05, -2.0435336e-03, -1.9325964e-03, -2.0965987e-03, -4.0559817e-04, -2.5958335e-03]).cuda()
-    # rot_max=torch.tensor([0.00045417, 0.0020992,  0.00188186, 0.00202889, 0.00050839, 0.00195071]).cuda()
     ###
-    for t in range(50):
+    
+    for t in range(15):
         print("Timestep: ",t)
         fingertip_centered_pos=envs.fingertip_centered_pos.clone()
         fingertip_centered_quat=envs.fingertip_centered_quat.clone()
@@ -140,52 +173,56 @@ def run_env(cfg: DictConfig):
         depth=torch.from_numpy(envs.get_wrist_camera_depth()).cuda()
         depth = torch.clamp(depth, min=-0.5, max=0.0)
         depth = (depth - (-0.1890)) / 0.0795
-
         tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
-        proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
-        raw_actions=policy(depth.unsqueeze(dim=1),proprioception,actions=None)
+        proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")[:,:]).cuda()
+        raw_actions=policy(depth.unsqueeze(dim=1),proprioception[...,2:],actions=None)
         predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
-        desired_delta_x=4.3678e-04-envs.plug_pos[:,0]
-        desired_delta_y=0.0013 - envs.plug_pos[:,1]
-        magnitude = torch.sqrt(desired_delta_x**2 + desired_delta_y**2 + 1e-8)
-        # 规范化到长度 0.0005
-        scale = 0.0005 / magnitude
-        desired_delta_x = desired_delta_x * scale
-        desired_delta_y = desired_delta_y * scale
-        for i in range(10):
-            fingertip_centered_pos=envs.fingertip_centered_pos.clone()
-            fingertip_centered_quat=envs.fingertip_centered_quat.clone()
-            tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
+        next_tgt_pos=envs.fingertip_centered_pos.clone()
+        next_tgt_quat=envs.fingertip_centered_quat.clone()
+        for i in range(10):    
+            tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
             proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
-            delta_pos=predict_actions[:,i,:3]
+            delta_pos=predict_actions[:,i,:3] 
+            # delta_pos[:,2] = delta_pos[:,2]
+            delta_pos[:,2] = 0
             delta_rot6d=predict_actions[:,i,3:]
             curr_rot6d=proprioception[:,3:]
             next_rot6d=curr_rot6d + delta_rot6d
-            next_tcp=torch.concatenate([fingertip_centered_pos + delta_pos,next_rot6d],axis=1).cpu().numpy()
+            next_tcp=torch.concatenate([next_tgt_pos + delta_pos,next_rot6d],axis=1).cpu().numpy()
             next_tgt_pose=torch.from_numpy(xyz_rot_transform(next_tcp,from_rep="rotation_6d",to_rep="quaternion")).cuda()
-            # if t==50:
-            #     print(fingertip_centered_pos[6])
-            #     import pdb;pdb.set_trace()
-            if t > 28 and t < 40:
-                next_tgt_pose[:,0]=fingertip_centered_pos[:,0] + desired_delta_x 
-                next_tgt_pose[:,1]=fingertip_centered_pos[:,1] + desired_delta_y 
-                next_tgt_pose[:,2]=fingertip_centered_pos[:,2]
-                print(desired_delta_x[9], desired_delta_y[9])
-            envs._apply_absolute_action(env_ids, 
+            next_tgt_pos=next_tgt_pose[:,:3]
+            next_tgt_quat=next_tgt_pose[:,3:]
+        inspect_id=9
+        print("Current Pose: ",envs.fingertip_centered_pos[inspect_id])
+        print("Current Quat: ",envs.fingertip_centered_quat[inspect_id])
+        next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
+        # next_tgt_pose[:,2] = envs.fingertip_centered_pos[:,2]
+        current_gripper_pos = envs.fingertip_centered_pos.clone()
+        next_tgt_pos=next_tgt_pose[:,:3].clone()
+        delta_pos = next_tgt_pos - current_gripper_pos   # [num_envs, 3]
+        # compute the norm (length) of each delta vector
+        delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8  # avoid div by 0
+
+        # desired fixed length
+        target_length = 0.0015 * (3 ** 0.5)
+
+        # normalize direction and scale
+        delta_pos_normalized = delta_pos / delta_norm * target_length
+        next_tgt_pos=current_gripper_pos + delta_pos_normalized
+        print("Target Pose: ", next_tgt_pos[inspect_id])
+        envs._move_gripper_to_eef_pose_automate_repo(env_ids, 
                                     ctrl_tgt_pos=next_tgt_pose[:,:3], 
                                     ctrl_tgt_quat=next_tgt_pose[:,3:], 
-                                    sim_steps=1, 
+                                    sim_steps=200, 
                                     if_log=False, 
                                     close_gripper=True)
-            images=envs.get_wrist_camera_visuals()
-            for env_id in range(12):
-            # for env_id in [3]:
-                image_list[env_id].append(images[env_id])
+        print("Reach Pose: ", envs.fingertip_centered_pos[inspect_id])
+        print("Reach Quat: ", envs.fingertip_centered_quat[inspect_id])
+        images=envs.get_wrist_camera_visuals()
+        for env_id in range(12):
+            image_list[env_id].append(images[env_id])
     errors=torch.norm(envs.fingertip_centered_pos-target_final_pos,dim=1)
     idx = torch.nonzero(errors >= 0.01, as_tuple=True)[0]
-    # error_pos = envs.fingertip_centered_pos[idx]
-    # error_quat=envs.fingertip_centered_quat[idx]
-    # for env_id in [3]:
     for env_id in range(12):
         save_video_from_images(image_list[env_id], out_path=f"output_video_{env_id}.mp4")
     import pdb;pdb.set_trace()

@@ -1,6 +1,6 @@
 from preprocess_data import load_processed_dataset
 import torch
-data=load_processed_dataset("processed_dataset_depth_relative_1014_DAgger.h5")
+data=load_processed_dataset("processed_dataset_depth_relative_1015_scale_dagger.h5")
 all_actions = data['actions'][()]  # (N, K, 9)
 delta_pos = all_actions[..., 0:3]  # (N, K, 3)
 delta_rot = all_actions[...,3:]

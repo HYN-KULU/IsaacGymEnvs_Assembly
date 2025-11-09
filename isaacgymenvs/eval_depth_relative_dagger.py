@@ -12,7 +12,14 @@ from dataset.diffusion_policy_dataset import DepthActionDataset
 from policy.diffusion_policy import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
-
+def load_processed_dataset(filename):
+    import h5py
+    data = {}
+    with h5py.File(filename, "r") as f:
+        # data["depth"] = f["depth"][()]               # (N, H, W)
+        data["proprioception"] = f["proprioception"][()]  # (N, 9)
+        data["actions"] = f["actions"][()]           # (N, K, 9)
+    return data
 def unnormalize_actions(actions, pos_min, pos_max, rot_min,rot_max, scale_to_unit=True):
     """
     Undo the normalization from DepthActionDataset.
@@ -94,7 +101,8 @@ def run_env(cfg: DictConfig):
     )
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1014_DAgger_ckpt/policy_last.ckpt"  # or policy_last.ckpt
+    # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1014_DAgger_ckpt/policy_last.ckpt"  # or policy_last.ckpt
+    ckpt_path = "../logs/automate/diffusion_policy_depth_relative_scale_dagger_1015_ckpt/policy_epoch_1000.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -123,10 +131,20 @@ def run_env(cfg: DictConfig):
     torch.set_printoptions(precision=5, sci_mode=False)
     image_list=[[] for _ in range(12)]
     target_final_pos=torch.tensor([4.3678e-04, 1.3084e-03, 4.5973e-01], device='cuda:0')
-    pos_min=torch.tensor([-0.00154221, -0.00159693, -0.00366277]).cuda()
-    pos_max=torch.tensor([0.00139481, 0.00135332, 0.00057381]).cuda()
-    rot_min=torch.tensor([-9.8673149e-07, -1.7817892e-03, -3.0193802e-03, -4.8132648e-04, -1.7962684e-03, -1.3056828e-02]).cuda()
-    rot_max=torch.tensor([0.00018658, 0.00013235, 0.00015144, 0.00150026, 0.0043378,  0.01287034]).cuda()
+    # pos_min=torch.tensor([-0.00154221, -0.00159693, -0.00366277]).cuda()
+    # pos_max=torch.tensor([0.00139481, 0.00135332, 0.00057381]).cuda()
+    # rot_min=torch.tensor([-9.8673149e-07, -1.7817892e-03, -3.0193802e-03, -4.8132648e-04, -1.7962684e-03, -1.3056828e-02]).cuda()
+    # rot_max=torch.tensor([0.00018658, 0.00013235, 0.00015144, 0.00150026, 0.0043378,  0.01287034]).cuda()
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_1015_scale_dagger.h5")
+    all_actions = data['actions'][()]  # (N, K, 9)
+    delta_pos = all_actions[..., 0:3]  # (N, K, 3)
+    delta_rot = all_actions[...,3:]
+    # delta_pos = all_actions[..., 0:3]  # (N, K, 3)
+    # delta_rot = all_actions[...,3:]
+    pos_min = torch.from_numpy(delta_pos.min(axis=(0, 1))).cuda()
+    pos_max = torch.from_numpy(delta_pos.max(axis=(0, 1))).cuda()
+    rot_min=torch.from_numpy(delta_rot.min(axis=(0,1))).cuda()
+    rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
 
     for t in range(50):
         print("Timestep: ",t)

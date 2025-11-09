@@ -8,14 +8,18 @@ defaults:
 name: AutoMateTaskDisassemble
 physics_engine: ${..physics_engine}
 
+seed: 42
+
 env:
-    numEnvs: ${resolve_default:128,${...num_envs}}
+    numEnvs: ${resolve_default:12,${...num_envs}}
     numObservations: 32
     numActions: 12
 
-    move_gripper_sim_steps: 120
     close_gripper_sim_steps: 80
-    disassemble_sim_steps: 60
+    # disassemble_sim_steps: 80
+    # move_gripper_sim_steps: 120
+    move_gripper_sim_steps: 120
+    disassemble_sim_steps: 80
 
     overwrite_subassemblies: True
     desired_subassemblies: ['asset_00346']
@@ -25,7 +29,7 @@ env:
     plug_pregrasp_offset: 0.1 # distance along z-axis before grasping the plug
     palm_to_finger_dist: 0.1034 # distance from end-effector palm to midpoint between fingers
     disassembly_dist_file: disassembly_dist.json
-    num_log_traj: 100
+    num_log_traj: 1
 
 randomize:
 
@@ -36,10 +40,12 @@ randomize:
     fingertip_centered_rot_noise: [0.0, 0.0, 0.0]  # noise on rotation
 
     socket_pos_xy_initial: [0.5, 0.0]  # initial position of socket on table
-    socket_pos_xy_noise: [0.1, 0.1]  # noise on socket position (i.e., randomization range)
+    socket_pos_xy_noise: [0, 0]  # noise on socket position (i.e., randomization range)
+    # socket_pos_xy_noise: [0.1, 0.1]  # noise on socket position (i.e., randomization range)
 
     gripper_rand_pos_noise: [0.05, 0.05, 0.05]
-    gripper_rand_rot_noise: [0.174533, 0.174533, 0.174533] # +-10 deg for roll/pitch/yaw 
+    # gripper_rand_rot_noise: [0.174533, 0.174533, 0.174533] # +-10 deg for roll/pitch/yaw 
+    gripper_rand_rot_noise: [0.0872665, 0.0872665, 0.0872665]
     gripper_rand_z_offset: 0.05
 
 rl:
@@ -56,8 +62,10 @@ ctrl:
                                #  hybrid_force_motion}
     all:
         jacobian_type: geometric
-        gripper_prop_gains: [250, 250]
-        gripper_deriv_gains: [2, 2]
+        gripper_prop_gains: [800, 800]
+        gripper_deriv_gains: [10, 10]
+        # gripper_prop_gains: [250, 250]
+        # gripper_deriv_gains: [2, 2]
     gym_default:
         ik_method: dls
         joint_prop_gains: [40, 40, 40, 40, 40, 40, 40]
@@ -72,10 +80,18 @@ ctrl:
         ik_method: dls
         joint_prop_gains: [40, 40, 40, 40, 40, 40, 40]
         joint_deriv_gains: [8, 8, 8, 8, 8, 8, 8]
+    # task_space_impedance:
+    #     motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
+    #     task_prop_gains: [300, 300, 300, 50, 50, 50]
+    #     task_deriv_gains: [34, 34, 34, 1.4, 1.4, 1.4]
     task_space_impedance:
         motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
-        task_prop_gains: [300, 300, 300, 50, 50, 50]
-        task_deriv_gains: [34, 34, 34, 1.4, 1.4, 1.4]
+        task_prop_gains: [800, 1500, 1500, 300, 300, 300]
+        task_deriv_gains: [80, 130, 80, 1.4, 1.4, 1.4]
+    # task_space_impedance:
+    #     motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
+    #     task_prop_gains: [5000, 5000, 5000, 1000, 1000, 1000]
+    #     task_deriv_gains: [80, 80, 80, 4, 4, 4]
     operational_space_motion:
         motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
         task_prop_gains: [60, 60, 60, 5, 5, 5]
