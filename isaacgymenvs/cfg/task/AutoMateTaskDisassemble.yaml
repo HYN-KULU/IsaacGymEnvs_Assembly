@@ -86,8 +86,8 @@ ctrl:
     #     task_deriv_gains: [34, 34, 34, 1.4, 1.4, 1.4]
     task_space_impedance:
         motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
-        task_prop_gains: [800, 1500, 1500, 300, 300, 300]
-        task_deriv_gains: [80, 130, 80, 1.4, 1.4, 1.4]
+        task_prop_gains: [800, 4000, 1500, 300, 300, 300]
+        task_deriv_gains: [80, 180, 80, 1.4, 1.4, 1.4]
     # task_space_impedance:
     #     motion_ctrl_axes: [1, 1, 1, 1, 1, 1]
     #     task_prop_gains: [5000, 5000, 5000, 1000, 1000, 1000]
