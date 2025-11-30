@@ -135,7 +135,7 @@ def run_env(cfg: DictConfig):
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
     envs.reset_idx(env_ids)
     init_plug_pos = envs.plug_pos.clone()
-    envs.disassemble_plug_from_socket_insertion_net(log_freq=5)
+    envs.disassemble_plug_from_socket_eval_init()
     save_dir = "eval_visual"
     os.makedirs(save_dir, exist_ok=True)
     envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
@@ -156,66 +156,57 @@ def run_env(cfg: DictConfig):
         min_height = 0.4234
     if envs.cfg_task.env.desired_subassemblies[0] == "asset_00030":
         min_height = 0.413
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00042":
-        offset[:, :2] = ((torch.rand(12, 2) * 0.02) - 0.01)/3
-    for i in range(200):
+    action_list=[]
+    depth_list=[]
+    for i in range(60):
         print(f"Step {i}")
-        log_step = (i in nums)
-        if i not in [201]:
-            # delta_pos = init_plug_pos - envs.plug_pos 
-            delta_pos = init_plug_pos - envs.plug_pos + offset.cuda()
-            delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8
-            target_length = 0.0005 * (3 ** 0.5)
-            delta_pos = delta_pos / delta_norm * target_length
-            delta_pos[:,2] = -0.0002
-            plug_height = envs.plug_pos[:, 2]  # shape [N]
-            freeze_mask = (plug_height <= min_height).unsqueeze(1)  # shape [N,1] for broadcasting
-
-            # freeze delta_pos to 0 where height <= min_height
-            delta_pos = torch.where(freeze_mask, torch.zeros_like(delta_pos), delta_pos)
-        else:
-            xyz = torch.tensor([0.000, 0.000, 0.000], device='cuda')
-            delta_pos = xyz.repeat(12, 1)
+        log_step=False
+        delta_pos = init_plug_pos - envs.plug_pos 
+        delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8
+        target_length = 0.004 * (3 ** 0.5)
+        delta_pos = delta_pos / delta_norm * target_length
+        delta_pos[:,2] = -0.0004
+        plug_height = envs.plug_pos[:, 2]  # shape [N]
+        freeze_mask = (plug_height <= min_height).unsqueeze(1)  # shape [N,1] for broadcasting
+        # freeze delta_pos to 0 where height <= min_height
+        delta_pos = torch.where(freeze_mask, torch.zeros_like(delta_pos), delta_pos)
         envs.gym.fetch_results(envs.sim, True)
         envs.gym.sync_frame_time(envs.sim)
         envs.refresh_base_tensors()
         envs.refresh_env_tensors()
-
         next_tgt_pos=envs.fingertip_centered_pos.clone() + delta_pos
         next_tgt_quat=envs.fingertip_centered_quat.clone()
-        if i==0:
-            current_pos=envs.fingertip_centered_pos.clone()
-            envs._move_gripper_to_eef_pose(env_ids, 
-                                            ctrl_tgt_pos=next_tgt_pos, 
-                                            ctrl_tgt_quat=next_tgt_quat, 
-                                            sim_steps=10, 
-                                            if_log=log_step, 
-                                            close_gripper=True,
-                                            log_freq=30,
-                                            log_extra=True
-                                            )
-            for inspect_id in range(12):
-                print(inspect_id)
-                print("Current Pose: ",current_pos[inspect_id])
-                print("Target Pose: ", next_tgt_pos[inspect_id])
-                print("Target Quat: ", next_tgt_quat[inspect_id])
-                print("Reach Pose: ", envs.fingertip_centered_pos[inspect_id])
-                print("Reach Quat: ", envs.fingertip_centered_quat[inspect_id])
-        else:
-            envs._move_gripper_to_eef_pose(env_ids, 
-                                            ctrl_tgt_pos=next_tgt_pos, 
-                                            ctrl_tgt_quat=next_tgt_quat, 
-                                            sim_steps=10, 
-                                            if_log=log_step, 
-                                            close_gripper=True,
-                                            log_freq=30,
-                                            log_extra=True
-                                            )
-        # inspect_id = 5
-        # print(envs.plug_pos.clone()[inspect_id])
+        action_list.append(delta_pos.detach().cpu().numpy())
+        envs._move_gripper_to_eef_pose(env_ids, 
+                                        ctrl_tgt_pos=next_tgt_pos, 
+                                        ctrl_tgt_quat=next_tgt_quat, 
+                                        sim_steps=10, 
+                                        if_log=log_step, 
+                                        close_gripper=True,
+                                        log_freq=10,
+                                        log_extra=False,
+                                        log_first_only=True
+                                        )
     envs._log_robot_state(envs.success_env_ids)
     envs._log_object_state(envs.success_env_ids)
-    envs._save_log_traj()        
+
+    # Success Checker
+    
+    action_array=np.stack(action_list)
+    zeros = np.zeros((action_array.shape[0], action_array.shape[1], 6))
+    # cond_z = envs.plug_pos[:, 2] < 0.425
+    # Condition 2: XY distance < 0.0005
+    # diff = init_plug_pos - envs.plug_pos                # shape (N, 3)
+    # xy_dist = torch.norm(diff[:, :2], dim=1)            # shape (N,)
+    # cond_xy = xy_dist < 0.001
+
+    # Combine conditions
+    # valid_idx = torch.nonzero(cond_z & cond_xy, as_tuple=False).squeeze(1)
+    action_array_padded = np.concatenate([action_array, zeros], axis=-1)
+    # envs.success_env_ids=np.intersect1d(envs.success_env_ids, valid_idx.cpu().numpy())
+     # for env_id in range(12):
+    #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False) 
+    envs._save_log_traj(action_array_padded)  
     os._exit(0)
 
 

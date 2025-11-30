@@ -38,3 +38,4 @@ if __name__=="__main__":
                 depth = data["camera3_depth"][T-1-step][i]  # (480, 640)
                 np.save(f"data/depth_relative_automate_1106/depth_{depth_id}.npy",depth)
                 depth_id+=1
+            

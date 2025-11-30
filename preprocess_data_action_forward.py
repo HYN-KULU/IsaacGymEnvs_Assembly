@@ -18,7 +18,7 @@ def read_from_hdf5(filename):
     """
     data = {}
     with h5py.File(filename, "r") as f:
-        for key in ["fingertip_centered_pos", "fingertip_centered_quat"]:
+        for key in ["fingertip_centered_pos", "fingertip_centered_quat", "actions"]:
             try:
                 data[key] = f[key][()]   # load as numpy array
             except Exception as e:
@@ -42,7 +42,7 @@ if __name__=="__main__":
     length_list=[]
     for hdf_id in range(101):
         print(hdf_id)
-        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/automate_1106_multitask/01102/disassembly_traj_{hdf_id}.h5")
+        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/automate_1106_multitask/asset_01053/disassembly_traj_{hdf_id}.h5")
         print(data["fingertip_centered_pos"].shape)
         length_list.append(data["fingertip_centered_pos"].shape[0])
         if data["fingertip_centered_pos"].shape[0]==0:
@@ -51,32 +51,14 @@ if __name__=="__main__":
         pos  = data["fingertip_centered_pos"][:,:,:][:, ::-1, :]
         tcp=np.concatenate([pos,quat],axis=2)
         tcp_rotation_6d=xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")
+        actions=data["actions"]
         for i in range(tcp_rotation_6d.shape[0]):
             pos_env_i=pos[i]
             tcp_rotation_6d_env_i=tcp_rotation_6d[i]
             T = pos_env_i.shape[0]
             for step in range(T):  # include all timesteps
-                # proprioception: current absolute pose (3+6)
-                proprioception = tcp_rotation_6d_env_i[step] # (9,)
-
-                # depth at current step
-                # depth = data["camera3_depth"][T-1-step][i]  # (480, 640)
-
-                future_actions = []
-                for j in range(1, K+1):
-                    if step + j < T:
-                        delta_pos = pos_env_i[step+j] - pos_env_i[step+j-1]   # (3,)
-                        rot6d = tcp_rotation_6d_env_i[step+j][3:]-tcp_rotation_6d_env_i[step+j-1][3:]                 # (6,)
-                    else:
-                        delta_pos = np.zeros(3, dtype=np.float32)
-                        rot6d = np.zeros(6, dtype=np.float32)  # repeat last rotation
-                    action_j = np.concatenate([delta_pos, rot6d])  # (9,)
-                    future_actions.append(action_j)
-
-                # final target shape: (K, 9)
-                action_target = np.stack(future_actions, axis=0)
-
-                action_list.append(action_target)
+                proprioception = tcp_rotation_6d_env_i[step]
+                action_list.append(actions[T-step-1])
                 proprioception_list.append(proprioception)
     
     proprio_array = np.array(proprioception_list, dtype=np.float32)    # shape (N, 9)
@@ -88,7 +70,7 @@ if __name__=="__main__":
     print("Actions:", action_array.shape)
 
     # Save to HDF5
-    out_filename = "processed_dataset_depth_relative_1111_01102.h5"
+    out_filename = "processed_dataset_depth_01053_forward.h5"
     with h5py.File(out_filename, "w") as f:
         # f.create_dataset("depth", data=depth_array, chunks=(1, 480, 640), compression="gzip", compression_opts=4)
         f.create_dataset("proprioception", data=proprio_array, compression="gzip", compression_opts=4)

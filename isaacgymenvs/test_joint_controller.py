@@ -11,6 +11,7 @@ import torch
 from dataset.diffusion_policy_dataset import DepthActionDataset
 from policy.diffusion_policy import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
+from isaacgym import gymapi, gymtorch, torch_utils
 import cv2
 def load_processed_dataset(filename):
     import h5py
@@ -128,7 +129,7 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
-    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_1109_01053.h5")
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_1107_01053.h5")
     all_actions = data['actions'][()]  # (N, K, 9)
     delta_pos = all_actions[..., 0:3]  # (N, K, 3)
     delta_rot = all_actions[...,3:]
@@ -140,7 +141,7 @@ def run_env(cfg: DictConfig):
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_depth_relative_1109_01053/policy_epoch_1950.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_depth_relative_1107_01053/policy_last.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -155,102 +156,96 @@ def run_env(cfg: DictConfig):
     # import pdb;pdb.set_trace()
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
     envs.reset_idx(env_ids)
-    init_plug_pos = envs.plug_pos.clone()
-    
     envs.disassemble_plug_from_socket_eval_init()
+    init_plug_pos = envs.plug_pos.clone()
     save_dir = "eval_visual"
     os.makedirs(save_dir, exist_ok=True)
     envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
     torch.set_printoptions(precision=5, sci_mode=False)
-    
-    for t in range(20):
-        print("Timestep: ",t)
-        fingertip_centered_pos=envs.fingertip_centered_pos.clone()
-        fingertip_centered_quat=envs.fingertip_centered_quat.clone()
-        ## Process the depth data
-        depth=torch.from_numpy(envs.get_wrist_camera_depth()).cuda()
-        depth = torch.clamp(depth, min=-0.5, max=0.0)
-        depth = (depth - (-0.1890)) / 0.0795
-        tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
-        proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")[:,:]).cuda()
-        raw_actions=policy(depth.unsqueeze(dim=1),proprioception[...,2:],actions=None)
-        predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
-        next_tgt_pos=envs.fingertip_centered_pos.clone()
-        next_tgt_quat=envs.fingertip_centered_quat.clone()
-        # Freeze the simulation
+    image_list=[[] for _ in range(12)]
+    target_final_pos=torch.tensor([4.3678e-04, 1.3084e-03, 4.5973e-01], device='cuda:0')
+    def quat_axis_angle_error(q_current: torch.Tensor, q_target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute quaternion orientation error between q_current and q_target
+        and return it as a 3D rotation vector (axis * angle).
+        Compatible with Isaac Gym torch_utils quaternions.
+        """
+        # Normalize quaternions
+        q_current = q_current / q_current.norm(p=2, dim=-1, keepdim=True)
+        q_target  = q_target / q_target.norm(p=2, dim=-1, keepdim=True)
+
+        # Relative rotation: q_rel = q_target * conj(q_current)
+        q_conj = torch.cat([-q_current[..., :3], q_current[..., 3:]], dim=-1)
+        q_rel  = torch_utils.quat_mul(q_target, q_conj)
+
+        # Clamp scalar part to valid range
+        qw = torch.clamp(q_rel[..., 3], -1.0, 1.0)
+        angle = 2.0 * torch.acos(qw)
+
+        # Compute normalized axis
+        sin_half_angle = torch.sqrt(1.0 - qw * qw)
+        axis = torch.zeros_like(q_rel[..., :3])
+        mask = sin_half_angle > 1e-6
+        axis[mask] = q_rel[..., :3][mask] / sin_half_angle[mask].unsqueeze(-1)
+        axis[~mask] = torch.tensor([1.0, 0.0, 0.0], device=q_rel.device)  # arbitrary
+
+        # Rotation vector
+        rot_vec = axis * angle.unsqueeze(-1)
+        return rot_vec
+    dof_state_tensor = envs.gym.acquire_dof_state_tensor(envs.sim)
+    dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+    envs.gym.refresh_jacobian_tensors(envs.sim)
+    envs.gym.refresh_rigid_body_state_tensor(envs.sim)
+
+    # Get current end-effector pose
+    current_pos = envs.fingertip_centered_pos.clone()
+    current_quat = envs.fingertip_centered_quat.clone()
+    body_names = envs.gym.get_actor_rigid_body_names(envs.env_ptrs[0], 0)
+    for i, name in enumerate(body_names): 
+        print(i,name)
+    # Define target 2 cm forward along +X
+    target_pos = current_pos.clone()
+    target_pos[:, 2] += 0.02
+    target_quat = current_quat.clone()
+    franka_jacobian=gymtorch.wrap_tensor(envs.gym.acquire_jacobian_tensor(envs.sim, "franka"))
+    # Extract Jacobian for fingertip_centered link
+    hand_idx = 11
+    jacobian = franka_jacobian[:, hand_idx, :, :7]  # [12, 6, 7]
+
+    # Compute damped least squares IK
+    damping = 0.05
+    step_size = 0.5
+
+    dof_state_tensor = envs.gym.acquire_dof_state_tensor(envs.sim)
+    dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+    q = dof_state[:, 0].view(envs.num_envs, -1)[:, :7].clone()
+
+    pos_err = target_pos - current_pos
+    orn_err = quat_axis_angle_error(current_quat, target_quat)
+    dpose = torch.cat([pos_err, orn_err], dim=-1).unsqueeze(-1)  # [12, 6, 1]
+
+    j_T = torch.transpose(jacobian, 1, 2)
+    I6 = torch.eye(6, device=q.device).unsqueeze(0)
+    dq = j_T @ (torch.inverse(jacobian @ j_T + damping * I6) @ dpose)
+    dq = dq.squeeze(-1)
+
+    # Update joint positions
+    q[:, :7] += step_size * dq
+    target_joint_pos = dof_state[:, 0].clone().view(envs.num_envs, -1)
+    target_joint_pos[:, :7] = q
+    target_joint_pos = target_joint_pos.flatten()
+
+    # Apply to simulator
+    for _ in range(20):
+        envs.gym.set_dof_position_target_tensor(envs.sim, gymtorch.unwrap_tensor(target_joint_pos))
+        envs.gym.simulate(envs.sim)
         envs.gym.fetch_results(envs.sim, True)
-        envs.gym.sync_frame_time(envs.sim)
-        envs.refresh_base_tensors()
-        envs.refresh_env_tensors()
-        current_gripper_pos = envs.fingertip_centered_pos.clone()
-        # Add the k steps together, and launch a move
-        for i in range(10):    
-            tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
-            proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
-            delta_pos=predict_actions[:,i,:3] 
-            # First test with freeze height
-            # delta_pos[:,2] = 0
-            delta_rot6d=predict_actions[:,i,3:]
-            curr_rot6d=proprioception[:,3:]
-            next_rot6d=curr_rot6d + delta_rot6d
-            next_tcp=torch.concatenate([next_tgt_pos + delta_pos,next_rot6d],axis=1).cpu().numpy()
-            next_tgt_pose=torch.from_numpy(xyz_rot_transform(next_tcp,from_rep="rotation_6d",to_rep="quaternion")).cuda()
-            next_tgt_pos=next_tgt_pose[:,:3]
-            next_tgt_quat=next_tgt_pose[:,3:]
+        envs.gym.refresh_rigid_body_state_tensor(envs.sim)
 
-        # Measuring the deviation        
-        init_plug_pos_2d = init_plug_pos.clone()
-        plug_pos_2d = envs.plug_pos.clone()
-        init_plug_pos_2d[:, 2] = 0
-        plug_pos_2d[:, 2] = 0
-        # raw delta
-        deviation = init_plug_pos_2d - plug_pos_2d
-        print("Deviation: ", deviation[5])
-        # deviation_norm = torch.norm(deviation, dim=1, keepdim=True) + 1e-8
-        # # condition mask: True → use raw action
-        # mask_raw = deviation_norm < 0.0001
-
-        next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
-        next_tgt_pos=next_tgt_pose[:,:3].clone()
-        delta_pos = next_tgt_pos - current_gripper_pos   # [num_envs, 3]
-        print("Action Delta Pose: ",delta_pos[5])
-        # delta_z=delta_pos[:,2].clone()
-        # delta_pos[:,2]=0
-        # delta_z[:] = -0.0008
-        # delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8  # avoid div by 0
-        # target_length = 0.002 * (3 ** 0.5)
-        # delta_pos = delta_pos / delta_norm * target_length
-        # choose: raw when very small, normalized otherwise
-        # delta_pos = torch.where(mask_raw, delta_pos, delta_pos_normalized)
-        # delta_pos[:,2] = -0.0002
-        # print(delta_z)
-        next_tgt_pos=current_gripper_pos + delta_pos
-        
-        next_tgt_quat=envs.fingertip_centered_quat.clone()
-        current_pos = envs.fingertip_centered_pos.clone()
-        envs._move_gripper_to_eef_pose(env_ids, 
-                                            ctrl_tgt_pos=next_tgt_pos, 
-                                            ctrl_tgt_quat=next_tgt_quat, 
-                                            sim_steps=10, 
-                                            if_log=True, 
-                                            close_gripper=True,
-                                            log_freq=10,
-                                            log_extra=True
-                                            )
-        for inspect_id in [5]:
-                print(inspect_id)
-                print("Current Pose: ",current_pos[inspect_id])
-                print("Target Pose: ", next_tgt_pos[inspect_id])
-                print("Target Quat: ", next_tgt_quat[inspect_id])
-                print("Reach Pose: ", envs.fingertip_centered_pos[inspect_id])
-                print("Reach Quat: ", envs.fingertip_centered_quat[inspect_id])
-    # Visualize
-    for env_id in range(12):
-        envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+    print("EE before:", current_pos[0])
+    print("EE after :", envs.fingertip_centered_pos[0])
     import pdb;pdb.set_trace()
-    
-    os._exit(0)
-
+   
 
 if __name__ == "__main__":
     run_env()
