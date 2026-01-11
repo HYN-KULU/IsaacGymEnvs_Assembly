@@ -9,11 +9,11 @@ def read_from_hdf5(filename):
     """
     data = {}
     with h5py.File(filename, "r") as f:
-        # for key in ["flow", "mask"]:
-        #     try:
-        #         data[key] = f[key][()]   # load as numpy array
-        #     except Exception as e:
-        #         print(f"Could not read {key}: {e}")
+        for key in ["flow", "mask"]:
+            try:
+                data[key] = f[key][()]   # load as numpy array
+            except Exception as e:
+                print(f"Could not read {key}: {e}")
         if "id_list" in f.keys():
             # print(id_list)
             id_list=f["id_list"][()].tolist()
@@ -68,9 +68,9 @@ if __name__=="__main__":
     action_list=[]
     flow_mask_id=0
     total_length=0
-    # for task_id in ["00030"]:
-    for task_id in ["00021", "00028", "00030", "00042", "00110","00681"]:
-        for hdf_id in range(50):
+    for task_id in ["00030"]:
+    # for task_id in ["00021", "00028", "00030", "00042", "00110","00681"]:
+        for hdf_id in range(6,7):
             print(hdf_id, task_id)
             # data flow shape: 12, 160, 2, 480, 640
             # data mask shape: 12 480 640
@@ -82,28 +82,30 @@ if __name__=="__main__":
             #         print(f["id_list"][()])
             #     print(f["flow"][()].shape)
             # print(len(data["id_list"]))    
-            total_length +=len(data["id_list"])
-            # if total_length * 160 > 195520:
-                # import pdb;pdb.set_trace()
-            # depth_data= read_from_hdf5_depth(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow/asset_{task_id}/disassembly_traj_{hdf_id}.h5")
-            # depth = depth_data["camera3_depth"]
+            # total_length +=len(data["id_list"])
+            # if total_length * 160 > 204640:
+            #     import pdb;pdb.set_trace()
+            depth_data= read_from_hdf5_depth(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow/asset_{task_id}/disassembly_traj_{hdf_id}.h5")
+            depth = depth_data["camera3_depth"]
             # print(depth.shape) 
-            # id_list=data["id_list"]
-            # depth_rot = np.rot90(depth, 2, axes=(2, 3)) 
-            # depth_rot_rev = depth_rot[::-1].copy()
+            id_list=data["id_list"]
+            depth_rot = np.rot90(depth, 2, axes=(2, 3)) 
+            depth_rot_rev = depth_rot[::-1].copy()
             # for i in range(data["flow"].shape[0]):
             # for i in id_list:
-            #     T=data["flow"].shape[1]
-            #     for j in range(T):
-            #         flow=data["flow"][i][j]
-            #         mask=data["mask"][i]
-            #         curr_depth=depth_rot_rev[j][i]
-            #         np.savez(
-            #                     f"/tmp/flow_net/flow_mask_{flow_mask_id}.npz",
-            #                     flow=flow,
-            #                     mask=mask,
-            #                     depth = curr_depth
-            #                 )
-            #         flow_mask_id+=1
-            #         print("Processed ", flow_mask_id)
+            for i in range(len(id_list)):
+                depth_id = id_list[i]
+                T=data["flow"].shape[1]
+                for j in range(T):
+                    flow=data["flow"][i][j]
+                    mask=data["mask"][i]
+                    curr_depth=depth_rot_rev[j][depth_id]
+                    # np.savez(
+                    #             f"/tmp/flow_net/flow_mask_{flow_mask_id}.npz",
+                    #             flow=flow,
+                    #             mask=mask,
+                    #             depth = curr_depth
+                    #         )
+                    flow_mask_id+=1
+                    print("Processed ", flow_mask_id)
     print(total_length)

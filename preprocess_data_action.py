@@ -40,9 +40,9 @@ if __name__=="__main__":
     proprioception_list=[]
     action_list=[]
     length_list=[]
-    for hdf_id in range(101):
+    for hdf_id in range(50):
         print(hdf_id)
-        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/automate_1106_multitask/01102/disassembly_traj_{hdf_id}.h5")
+        data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_1206/asset_00681/disassembly_traj_{hdf_id}.h5")
         print(data["fingertip_centered_pos"].shape)
         length_list.append(data["fingertip_centered_pos"].shape[0])
         if data["fingertip_centered_pos"].shape[0]==0:
@@ -88,7 +88,7 @@ if __name__=="__main__":
     print("Actions:", action_array.shape)
 
     # Save to HDF5
-    out_filename = "processed_dataset_depth_relative_1111_01102.h5"
+    out_filename = "flow_diffusion_policy_00681_0108_align.h5"
     with h5py.File(out_filename, "w") as f:
         # f.create_dataset("depth", data=depth_array, chunks=(1, 480, 640), compression="gzip", compression_opts=4)
         f.create_dataset("proprioception", data=proprio_array, compression="gzip", compression_opts=4)

@@ -14,6 +14,11 @@ def read_from_hdf5(filename):
                 data[key] = f[key][()]   # load as numpy array
             except Exception as e:
                 print(f"Could not read {key}: {e}")
+        if "id_list" in f.keys():
+                id_list=f["id_list"][()].tolist()
+        else:
+                id_list=[0,1,2,3,4,5,6,7,8,9,10,11]
+    data["id_list"] = id_list
     return data
 
 def read_from_hdf5_depth(filename):
@@ -54,35 +59,46 @@ def save_depth_frames(depth_array, out_path="depth_preview.png", num_frames=10):
     plt.close()
 
     print(f"[Saved] Depth visualization → {out_path}")
-
+import argparse
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task_id", type=str, required=True,
+                        help="Task ID, e.g., 00175")
+    return parser.parse_args()
 
 if __name__=="__main__":
     proprioception_list=[]
     action_list=[]
-    flow_mask_id=1920
-    for hdf_id in range(51,52):
-        print(hdf_id)
-        # data flow shape: 12, 160, 2, 480, 640
-        # data mask shape: 12 480 640
-        data=read_from_hdf5(f"/home/ubuntu/automate/alltracker/flow_mask_data/flow_asset_00681_{hdf_id}.h5")     
-        depth_data= read_from_hdf5_depth(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow/asset_00681/disassembly_traj_{hdf_id}.h5")
-        depth = depth_data["camera3_depth"] 
-        depth_rot = np.rot90(depth, 2, axes=(2, 3)) 
-        depth_rot_rev = depth_rot[::-1].copy()
-        # save_depth_frames(depth_rot_rev, num_frames=10)
-        # depth_data [camera3_depth] 160, 12, 480, 640
-        # import pdb;pdb.set_trace()
-        for i in range(data["flow"].shape[0]):
-            T=data["flow"].shape[1]
-            for j in range(T):
-                flow=data["flow"][i][j]
-                mask=data["mask"][i]
-                curr_depth=depth_rot_rev[j][i]
-                np.savez(
-                            f"data/flow_net/flow_mask_{flow_mask_id}.npz",
-                            flow=flow,
-                            mask=mask,
-                            depth = curr_depth
-                        )
-                flow_mask_id+=1
-                print("Processed ", flow_mask_id)
+    import os
+    args = parse_args()
+    for task_id in [args.task_id]:
+        flow_mask_id=0
+        for hdf_id in range(100,101):
+            print(hdf_id)
+            # data flow shape: 12, 160, 2, 480, 640
+            # data mask shape: 12 480 640
+            data=read_from_hdf5(f"/home/ubuntu/automate/alltracker/flow_mask_data/{task_id}/flow_asset_{task_id}_{hdf_id}.h5")     
+            depth_data= read_from_hdf5_depth(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow/asset_{task_id}/disassembly_traj_{hdf_id}.h5")
+            depth = depth_data["camera3_depth"] 
+            depth_rot = np.rot90(depth, 2, axes=(2, 3)) 
+            depth_rot_rev = depth_rot[::-1].copy()
+            id_list=data["id_list"]
+            # for i in range(data["flow"].shape[0]):
+            for i in range(len(id_list)):
+                depth_id = id_list[i]
+                T=data["flow"].shape[1]
+                for j in range(T):
+                    flow=data["flow"][i][j]
+                    mask=data["mask"][i]
+                    curr_depth=depth_rot_rev[j][depth_id]
+                    log_path=f"data/flow_net/asset_{task_id}/flow_mask_{flow_mask_id}.npz"
+                    log_dir = os.path.dirname(log_path)
+                    os.makedirs(log_dir, exist_ok=True)
+                    np.savez(
+                                f"data/flow_net/asset_{task_id}/flow_mask_{flow_mask_id}.npz",
+                                flow=flow,
+                                mask=mask,
+                                depth = curr_depth
+                            )
+                    flow_mask_id+=1
+                    print("Processed ", flow_mask_id)
