@@ -135,81 +135,12 @@ def run_env(cfg: DictConfig):
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
     envs.reset_idx(env_ids)
     init_plug_pos = envs.plug_pos.clone()
-    envs.disassemble_plug_from_socket_eval_init()
-    save_dir = "eval_visual"
+    # envs.disassemble_plug_from_socket_eval_init()
+    envs.iga_demo()
+    save_dir = "iga_eval_visual"
     os.makedirs(save_dir, exist_ok=True)
-    envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
-    torch.set_printoptions(precision=5, sci_mode=False)
-    image_list=[[] for _ in range(12)]
-    target_final_pos=torch.tensor([4.3678e-04, 1.3084e-03, 4.5973e-01], device='cuda:0')
-    offset = torch.zeros(12, 3)
-    # -0.01 ~ 0.01 for task 00042
-    offset[:, :2] = (torch.rand(12, 2) * 0.02) - 0.01 
-    
-    nums = random.sample(range(200), 50)
-    # Test Min Height
-    # 00861: 0.418
-    min_height = 0
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00681":
-        min_height = 0.418
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00028":
-        min_height = 0.4234
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00030":
-        min_height = 0.413
-    action_list=[]
-    depth_list=[]
-    for i in range(60):
-        print(f"Step {i}")
-        log_step=False
-        delta_pos = init_plug_pos - envs.plug_pos 
-        delta_pos[:,1] +=0.015
-        delta_pos[:,0] +=0.02
-        delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8
-        target_length = 0.004 * (3 ** 0.5)
-        delta_pos = delta_pos / delta_norm * target_length
-        delta_pos[:,2] = -0.0004
-        plug_height = envs.plug_pos[:, 2]  # shape [N]
-        freeze_mask = (plug_height <= min_height).unsqueeze(1)  # shape [N,1] for broadcasting
-        # freeze delta_pos to 0 where height <= min_height
-        delta_pos = torch.where(freeze_mask, torch.zeros_like(delta_pos), delta_pos)
-        envs.gym.fetch_results(envs.sim, True)
-        envs.gym.sync_frame_time(envs.sim)
-        envs.refresh_base_tensors()
-        envs.refresh_env_tensors()
-        next_tgt_pos=envs.fingertip_centered_pos.clone() + delta_pos
-        next_tgt_quat=envs.fingertip_centered_quat.clone()
-        action_list.append(delta_pos.detach().cpu().numpy())
-        envs._move_gripper_to_eef_pose(env_ids, 
-                                        ctrl_tgt_pos=next_tgt_pos, 
-                                        ctrl_tgt_quat=next_tgt_quat, 
-                                        sim_steps=10, 
-                                        if_log=log_step, 
-                                        close_gripper=True,
-                                        log_freq=10,
-                                        log_extra=False,
-                                        log_first_only=True
-                                        )
-    envs._log_robot_state(envs.success_env_ids)
-    envs._log_object_state(envs.success_env_ids)
-
-    # Success Checker
-    
-    action_array=np.stack(action_list)
-    zeros = np.zeros((action_array.shape[0], action_array.shape[1], 6))
-    # cond_z = envs.plug_pos[:, 2] < 0.425
-    # Condition 2: XY distance < 0.0005
-    # diff = init_plug_pos - envs.plug_pos                # shape (N, 3)
-    # xy_dist = torch.norm(diff[:, :2], dim=1)            # shape (N,)
-    # cond_xy = xy_dist < 0.001
-
-    # Combine conditions
-    # valid_idx = torch.nonzero(cond_z & cond_xy, as_tuple=False).squeeze(1)
-    action_array_padded = np.concatenate([action_array, zeros], axis=-1)
-    # envs.success_env_ids=np.intersect1d(envs.success_env_ids, valid_idx.cpu().numpy())
-     # for env_id in range(12):
-    #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False) 
-    envs._save_log_traj(action_array_padded)  
     os._exit(0)
+    # envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
 
 
 if __name__ == "__main__":

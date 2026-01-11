@@ -9,9 +9,14 @@ import os
 import torch
 # from policy.diffusion_policy import Diffusion_Policy
 from dataset.diffusion_policy_dataset import DepthActionDataset
-from policy.diffusion_policy import Diffusion_Policy
+from policy.flow_diffusion_policy import Diffusion_Policy    
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
+from policy.flow_policy import FlowPolicy
+import sys
+sys.path.append("/home/ubuntu/automate/SAM")
+from socket_video import *
+from collections import OrderedDict
 def load_processed_dataset(filename):
     import h5py
     data = {}
@@ -49,6 +54,19 @@ def unnormalize_actions(actions, pos_min, pos_max, rot_min,rot_max, scale_to_uni
 
 import imageio
 import numpy as np
+
+
+def rewrite_monai_keys(state_dict):
+    new_sd = OrderedDict()
+    for k, v in state_dict.items():
+        nk = k
+        nk = nk.replace(".sub0", ".submodule.0")
+        nk = nk.replace(".sub1", ".submodule.1")
+        nk = nk.replace(".sub2", ".submodule.2")
+        nk = nk.replace(".subconv", ".submodule.conv")
+        nk = nk.replace(".subadn", ".submodule.adn")
+        new_sd[nk] = v
+    return new_sd
 
 def normalize_xy_min_length(delta_pos, i, min_length=0.0005):
     """
@@ -128,7 +146,7 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
-    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/flow_diffusion_policy_00681_0108.h5")
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_flow_diffusion_policy_00681.h5")
     all_actions = data['actions'][()]  # (N, K, 9)
     delta_pos = all_actions[..., 0:3]  # (N, K, 3)
     delta_rot = all_actions[...,3:]
@@ -140,20 +158,14 @@ def run_env(cfg: DictConfig):
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy/policy_epoch_950.ckpt"  # or policy_last.ckpt
-    policy = Diffusion_Policy(
-        num_action=10,
-        obs_feature_dim=512,
-        hidden_dim=512,
-        proprio_dim=7,
-        action_dim=9
-    ).to(device)
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy/epoch_950.pt"  # or policy_last.ckpt
+    policy = Diffusion_Policy().to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
-    policy.load_state_dict(state_dict, strict=True)
+    policy.load_state_dict(state_dict["model"], strict=True)
     policy.eval()
 
     # import pdb;pdb.set_trace()
-    env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
+    env_ids=torch.tensor([0], device='cuda:0')
     envs.reset_idx(env_ids)
     init_plug_pos = envs.plug_pos.clone()
     
@@ -162,18 +174,42 @@ def run_env(cfg: DictConfig):
     os.makedirs(save_dir, exist_ok=True)
     envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
     torch.set_printoptions(precision=5, sci_mode=False)
-    
-    for t in range(20):
+    # Get Initial Mask
+    checkpoint_path = "/home/ubuntu/automate/SAM/sam_vit_b_01ec64.pth"
+    sam = init_sam(checkpoint_path)
+    mask_generator = SamAutomaticMaskGenerator(sam)
+    img = envs.get_wrist_camera_rgb(0)
+    img_rot = np.rot90(img, k=2)
+    first_result, mask = process_single_frame(img_rot[0], mask_generator)
+    mask=torch.from_numpy(mask).cuda()[::2,::2].unsqueeze(0).unsqueeze(0)
+    flow_policy = FlowPolicy().to(device)
+    ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_ckpt/epoch_low_resolution.pt", map_location=device)
+
+    sd = ckpt["model"]
+    sd = OrderedDict((k.replace("module.", ""), v) for k, v in sd.items())
+    sd = rewrite_monai_keys(sd)
+    flow_policy.load_state_dict(sd, strict=True)
+    flow_policy.eval()
+    for t in range(10):
         print("Timestep: ",t)
         fingertip_centered_pos=envs.fingertip_centered_pos.clone()
         fingertip_centered_quat=envs.fingertip_centered_quat.clone()
-        ## Process the depth data
-        depth=torch.from_numpy(envs.get_wrist_camera_depth()).cuda()
+        # Rotate the Depth !
+        depth=torch.from_numpy(np.rot90(envs.get_wrist_camera_depth(), k=2).copy()).cuda()
         depth = torch.clamp(depth, min=-0.5, max=0.0)
         depth = (depth - (-0.1890)) / 0.0795
+        flow=flow_policy(mask,depth[:,::2,::2].unsqueeze(0))[0]
+        # depth shape: 1, 480, 640
+        flow[...] = 0
+        # Flow prediction model: depth + initial mask -> flow
+        # Flow Diffusion Policy Model: Flow + Depth + Proprioception -> Action
         tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
         proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")[:,:]).cuda()
-        raw_actions=policy(depth.unsqueeze(dim=1),proprioception[...,2:],actions=None)
+        # depth 1 480 640
+        # flow 2 240 320
+        # proprioception shape 1 9
+        raw_actions=policy(depth=depth.unsqueeze(0),flow=flow.unsqueeze(0),proprioception=proprioception[...,2:],actions=None)[:,:10,:]
+        # raw_actions=policy(depth.unsqueeze(dim=1),proprioception[...,2:],actions=None)
         predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
         next_tgt_pos=envs.fingertip_centered_pos.clone()
         next_tgt_quat=envs.fingertip_centered_quat.clone()
@@ -198,33 +234,23 @@ def run_env(cfg: DictConfig):
             next_tgt_pos=next_tgt_pose[:,:3]
             next_tgt_quat=next_tgt_pose[:,3:]
 
-        # Measuring the deviation        
+        # # Measuring the deviation        
         init_plug_pos_2d = init_plug_pos.clone()
         plug_pos_2d = envs.plug_pos.clone()
         init_plug_pos_2d[:, 2] = 0
         plug_pos_2d[:, 2] = 0
         # raw delta
         deviation = init_plug_pos_2d - plug_pos_2d
-        print("Deviation: ", deviation[5])
-        # deviation_norm = torch.norm(deviation, dim=1, keepdim=True) + 1e-8
-        # # condition mask: True → use raw action
-        # mask_raw = deviation_norm < 0.0001
+        print(deviation)
+        # # deviation_norm = torch.norm(deviation, dim=1, keepdim=True) + 1e-8
+        # # # condition mask: True → use raw action
+        # # mask_raw = deviation_norm < 0.0001
 
-        next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
-        next_tgt_pos=next_tgt_pose[:,:3].clone()
+        # next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
+        # next_tgt_pos=next_tgt_pose[:,:3].clone()
         delta_pos = next_tgt_pos - current_gripper_pos   # [num_envs, 3]
-        print("Action Delta Pose: ",delta_pos[5])
-        # delta_z=delta_pos[:,2].clone()
-        # delta_pos[:,2]=0
-        # delta_z[:] = -0.0008
-        # delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8  # avoid div by 0
-        # target_length = 0.002 * (3 ** 0.5)
-        # delta_pos = delta_pos / delta_norm * target_length
-        # choose: raw when very small, normalized otherwise
-        # delta_pos = torch.where(mask_raw, delta_pos, delta_pos_normalized)
-        # delta_pos[:,2] = -0.0002
-        # print(delta_z)
-        next_tgt_pos=current_gripper_pos + delta_pos
+        print(delta_pos)
+        # next_tgt_pos=current_gripper_pos + delta_pos
         
         next_tgt_quat=envs.fingertip_centered_quat.clone()
         current_pos = envs.fingertip_centered_pos.clone()
@@ -234,18 +260,10 @@ def run_env(cfg: DictConfig):
                                             sim_steps=10, 
                                             if_log=True, 
                                             close_gripper=True,
-                                            log_freq=10,
+                                            log_freq=1,
                                             log_extra=True
                                             )
-        for inspect_id in [5]:
-                print(inspect_id)
-                print("Current Pose: ",current_pos[inspect_id])
-                print("Target Pose: ", next_tgt_pos[inspect_id])
-                print("Target Quat: ", next_tgt_quat[inspect_id])
-                print("Reach Pose: ", envs.fingertip_centered_pos[inspect_id])
-                print("Reach Quat: ", envs.fingertip_centered_quat[inspect_id])
-    # Visualize
-    for env_id in range(12):
+    for env_id in range(1):
         envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
     import pdb;pdb.set_trace()
     

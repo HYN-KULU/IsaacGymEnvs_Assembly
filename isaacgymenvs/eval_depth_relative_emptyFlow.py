@@ -9,7 +9,7 @@ import os
 import torch
 # from policy.diffusion_policy import Diffusion_Policy
 from dataset.diffusion_policy_dataset import DepthActionDataset
-from policy.diffusion_policy import Diffusion_Policy
+from policy.diffusion_policy_flow_debug import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
 def load_processed_dataset(filename):
@@ -140,7 +140,7 @@ def run_env(cfg: DictConfig):
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy/policy_epoch_950.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_emptyFlow/policy_epoch_250.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -224,6 +224,7 @@ def run_env(cfg: DictConfig):
         # delta_pos = torch.where(mask_raw, delta_pos, delta_pos_normalized)
         # delta_pos[:,2] = -0.0002
         # print(delta_z)
+        delta_pos[:,2] = 0
         next_tgt_pos=current_gripper_pos + delta_pos
         
         next_tgt_quat=envs.fingertip_centered_quat.clone()
