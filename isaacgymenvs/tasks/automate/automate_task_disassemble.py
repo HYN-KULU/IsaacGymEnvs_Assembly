@@ -290,7 +290,161 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         cy = height / 2.0
 
         return fx, fy, cx, cy
-    
+        
+    def iga_demo(self):
+
+        import imageio, os
+        from isaacgym import gymtorch
+        import random
+        import numpy as np
+
+        save_dir = "iga_eval_visual"
+        os.makedirs(save_dir, exist_ok=True)
+
+        env_id = 0  # visualize env 0
+        plug_sim_id = int(self.plug_actor_ids_sim[env_id])
+
+        # ------------------------------------------------------------
+        # 1. Start from final aligned height
+        # ------------------------------------------------------------
+        FINAL_HEIGHT = 0.018
+        self.root_pos[env_id, self.plug_actor_id_env, 2] += FINAL_HEIGHT
+        self.root_pos[env_id, self.plug_actor_id_env, 1] += 0.0034
+        self.root_pos[env_id, self.plug_actor_id_env, 0] += -0.0023
+        self.root_pos[env_id, self.plug_actor_id_env, 3:] += 0.0002
+
+        idx = torch.tensor([plug_sim_id], dtype=torch.int32, device=self.device)
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim,
+            gymtorch.unwrap_tensor(self.root_state),
+            gymtorch.unwrap_tensor(idx),
+            1
+        )
+
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+
+        # ============================================================
+        #   PART 1 — NOISY RANDOM TRANSLATION (always roughly upward)
+        # ============================================================
+
+        translate_steps = 20
+        image_id=0
+        # step sim
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        # save image
+        rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
+        imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
+        image_id+=1
+        base_dy = random.uniform(-0.0035, 0.0035)   
+        base_dx = random.uniform(-0.0035, 0.0035)   
+        base_dz = random.uniform(0, 0.004)   
+        for t in range(translate_steps):
+
+            # Base upward movement
+                # general upward direction (Y axis)
+            
+            # Noise in XY and Z
+            noise_dx = (random.random() - 0.5) * 0.0008     # [-0.0004, 0.0004]
+            noise_dy = (random.random() - 0.5) * 0.0004     # [-0.0002, 0.0002]
+            noise_dz = (random.random() - 0.5) * 0.0006     # [-0.0003, 0.0003]
+
+            # Non-uniform scale factor
+            step_scale = random.uniform(0.4, 1.6)
+
+            # Final noisy translation
+            dx = step_scale * (base_dx+ noise_dx)
+            dy = step_scale * (base_dy + noise_dy)
+            dz = step_scale * (base_dz + noise_dz)
+
+            # apply translation
+            self.root_pos[env_id, self.plug_actor_id_env, 0] += dx
+            self.root_pos[env_id, self.plug_actor_id_env, 1] += dy
+            self.root_pos[env_id, self.plug_actor_id_env, 2] += dz
+
+            # sync to sim
+            self.gym.set_actor_root_state_tensor_indexed(
+                self.sim,
+                gymtorch.unwrap_tensor(self.root_state),
+                gymtorch.unwrap_tensor(idx),
+                1
+            )
+
+            # step sim
+            self.gym.simulate(self.sim)
+            self.gym.fetch_results(self.sim, True)
+            self.gym.step_graphics(self.sim)
+            self.gym.render_all_camera_sensors(self.sim)
+
+            # save image
+            rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
+            imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
+            image_id+=1
+            print(f"Saved translate_{t:03d}.png")
+
+        # ============================================================
+        #   PART 2 — NOISY RANDOM ROTATION
+        # ============================================================
+
+        rotate_steps = 20
+        q = self.root_quat[env_id, self.plug_actor_id_env].clone()
+
+        for t in range(rotate_steps):
+
+            # random small rotation axis
+            ax = (random.random() - 0.5) * 0.05    # small roll noise
+            ay = (random.random() - 0.5) * 0.05    # small pitch noise
+            az = random.uniform(0.8, 1.2) * 5*(np.pi/180)  # main yaw 2° ± 20%
+
+            # non-uniform scaling
+            rot_scale = random.uniform(0.4, 1.6)
+            ax *= rot_scale
+            ay *= rot_scale
+            az *= rot_scale
+
+            # convert to gymapi quaternion
+            dq = gymapi.Quat.from_euler_zyx(ax, ay, az)
+
+            # current quaternion
+            old_q = gymapi.Quat(q[0], q[1], q[2], q[3])
+
+            # compose rotation
+            new_q = dq * old_q
+
+            # write back
+            q_new_tensor = torch.tensor([new_q.x, new_q.y, new_q.z, new_q.w], device=self.device)
+            self.root_quat[env_id, self.plug_actor_id_env] = q_new_tensor
+            q = q_new_tensor
+
+            # sync to sim
+            self.gym.set_actor_root_state_tensor_indexed(
+                self.sim,
+                gymtorch.unwrap_tensor(self.root_state),
+                gymtorch.unwrap_tensor(idx),
+                1
+            )
+
+            # step sim
+            self.gym.simulate(self.sim)
+            self.gym.fetch_results(self.sim, True)
+            self.gym.step_graphics(self.sim)
+            self.gym.render_all_camera_sensors(self.sim)
+
+            # save RGB
+            rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
+            imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
+            image_id+=1
+            print(f"Saved rotate_{t:03d}.png")
+
+        print("IGA demo finished.")
+
+
+
     def add_cameras(self):
         self.camera_handles = []
         # Shared base properties
@@ -342,13 +496,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # imageio.imwrite("panda_camera.png", color_image)
             # import pdb;pdb.set_trace()
             # --- Bottom view (angled from below)
-            # cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+            cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+            self.gym.set_camera_location(
+                cam_handle_bottom, env_ptr,
+                gymapi.Vec3(0.1, -0.1, 0.55),  # your bottom cam pos
+                gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
+            )
             # self.gym.set_camera_location(
             #     cam_handle_bottom, env_ptr,
             #     gymapi.Vec3(0.5 * 0.6, -0.5 * 0.6, 0.7),  # your bottom cam pos
             #     gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
             # )
-            # env_cameras["bottom"] = cam_handle_bottom
+            env_cameras["bottom"] = cam_handle_bottom
             # import pdb;pdb.set_trace()
             # cam_pose_top=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_top)
             # cam_pose_bottom=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_bottom)
@@ -660,10 +819,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 self.sim, self.env_ptrs[env_id], cam_handle, gymapi.IMAGE_COLOR
             ).reshape(self.cam_props.height, self.cam_props.width, 4)[:, :, :3]
             rgb_list.append(color_image)
-        # Save if path provided
-        # if save_path is not None:
-        #     imageio.imwrite(save_path, color_image.astype(np.uint8))
-        #     print(f"Saved top camera image to {save_path}")
         return np.stack(rgb_list)
     
     def get_wrist_camera_visuals(self, env_id=0, save_path=None):
@@ -1022,7 +1177,12 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     if VISUALIZE_RGB:
                         camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
                     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
-
+                # seg = self.gym.get_camera_image(
+                #     self.sim,
+                #     self.env_ptrs[env_id],
+                #     self.camera_handles[env_id]["panda"],
+                #     gymapi.IMAGE_SEGMENTATION
+                # ).reshape(self.cam_props.height, self.cam_props.width)
                 # # Convert to arrays if desired
                 # self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
                 # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
@@ -1226,7 +1386,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # print(rand_pos_offset)
         # rand_pos_offset[:, 2] = 0.01 * torch.rand((self.num_envs,), device=self.device)  
         rand_pos_offset[:, 0:2] = 0.02 * torch.rand((self.num_envs, 2), device=self.device) - 0.01  # x,y ∈ [-0.02, 0.02]
-        print(rand_pos_offset)
+        # print(rand_pos_offset)
         rand_pos_offset[:, 2] = 0.005 * torch.rand((self.num_envs,), device=self.device) + 0.005  
         ctrl_tgt_pos += rand_pos_offset
         ctrl_tgt_pos[:,2] += self.disassembly_dists * 3.0
@@ -1250,34 +1410,29 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.init_plug_quat=self.plug_quat.clone()
         # 00062: 0.04
         # 01053: 
-        lift_height=self.disassembly_dists * 3
+        lift_height=self.disassembly_dists * 1.4
         
-        if self.cfg_task.env.desired_subassemblies[0] == "asset_00110":
-            target_gripper_pos = self.fingertip_centered_pos.clone()
-            target_gripper_pos[:,2] += 0.7/3
-            target_gripper_quat=self.fingertip_centered_quat.clone()
-            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 400, if_log=if_log, close_gripper=True, breaking=120, log_freq=log_freq)
-        else:
-            target_gripper_pos = self.fingertip_centered_pos.clone()
-            target_gripper_pos[:,2] += 0.5/3
-            target_gripper_quat=self.fingertip_centered_quat.clone()
-            self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 400, if_log=if_log, close_gripper=True, breaking=120, log_freq=log_freq)
+        target_gripper_pos = self.fingertip_centered_pos.clone()
+        target_gripper_pos[:,2] += lift_height
+        target_gripper_quat=self.fingertip_centered_quat.clone()
+        self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 400, if_log=if_log, close_gripper=True, log_freq=5)
         
         # success lift up threshold to define
         # 00062: 4.2328e-1
-        threshold = 3.9328e-1
+        # threshold = 3.9328e-1
+        threshold = 0
         # 3. height mask
         height_mask = (self.plug_pos[:, 2].cpu().numpy() > threshold).reshape(-1)
-        print(self.plug_pos[:,2])
+        # print(self.plug_pos[:,2])
         # Combine all three conditions
         # Get the indices (env IDs)
         # dist to center 
         # calculate distance self.plug_pos[:,:2] - self.init_plug_pos[:,:2] 计算xy距离
         # mask < dist threshold
-        print(self.plug_pos)
-        print(self.init_plug_pos)
+        # print(self.plug_pos)
+        # print(self.init_plug_pos)
         dist_xy = torch.norm(self.plug_pos[:, :2] - self.init_plug_pos[:, :2], dim=-1)
-        print(dist_xy)
+        # print(dist_xy)
         distance_threshold=0.0015
         if self.cfg_task.env.desired_subassemblies[0] == "asset_01102":
             distance_threshold=0.0025
@@ -1461,7 +1616,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.log_init_plug_quat += self.init_plug_quat[env_ids].cpu().tolist()
 
 
-    def save_first_env_images(self, out_dir="saved_visual", index=0, reverse=True):
+    def save_first_env_images(self, out_dir="saved_visual", index=0, reverse=True, mask = None):
         """
         Save first environment's RGB images for camera1 and camera2 in separate folders,
         and generate reverse-order videos for each (disassembly -> assembly).
@@ -1481,7 +1636,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         for step in range(num_steps):
             # img1 = self.camera1_rgb_traj[step][env_id]  # (H, W, 3)
             # img2 = self.camera2_rgb_traj[step][env_id]
+            # import pdb;pdb.set_trace()
             img3 = self.camera3_rgb_traj[step][env_id]
+            if mask is not None:
+                mask3=mask[:,:,None]
+                img3=img3*mask3
             img3 = np.rot90(img3, 2)
             # imageio.imwrite(os.path.join(cam1_dir, f"step{step:03d}.png"), img1.astype(np.uint8))
             # imageio.imwrite(os.path.join(cam2_dir, f"step{step:03d}.png"), img2.astype(np.uint8))
@@ -1504,7 +1663,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # cam2_video = os.path.join(out_dir, "camera2_reverse.mp4")
         cam3_video = os.path.join(out_dir, f"camera3_reverse_{index}.mp4")
 
-        fps = 30  # adjust playback speed
+        fps = 80  # adjust playback speed
         # I want 30 frames into 1 second; 20 is for 300 frames into 15 second
 
         # Reverse order of steps
@@ -1536,30 +1695,44 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
     def _save_log_traj(self,action=None):
         if len(self.log_arm_dof_pos) > -1:
         # if len(self.log_arm_dof_pos) > self.cfg_task.env.num_log_traj:
+        
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "flow", self.cfg_task.env.desired_subassemblies[0],
+                "flow_1206", self.cfg_task.env.desired_subassemblies[0],
                 f"disassembly_traj_{self.cfg['seed']}.h5"
             )
+            log_dir = os.path.dirname(log_filename)
+            os.makedirs(log_dir, exist_ok=True)
             print(f"Logging Run {self.cfg['seed']}")
             success_env_ids=self.success_env_ids
-            if LOG_VISUAL:
-                success_env_ids = np.array([0,1,2,3,4,5,6,7,8,9,10,11])
-            if self.cfg_task.env.desired_subassemblies[0] == "asset_01053":
-                log_steps=80
-            elif self.cfg_task.env.desired_subassemblies[0] == "asset_00062":
-                log_steps=120
-            elif self.cfg_task.env.desired_subassemblies[0] == "asset_01102":
-                log_steps=160
-            else:
-                log_steps=230
+            if  LOG_VISUAL:
+                # success_env_ids = torch.tensor([0,1])
+                success_env_ids = torch.tensor([0,1,2,3,4,5,6,7,8,9,10,11])
             if LOG_VISUAL:
                 for i in range(success_env_ids.shape[0]):
                     index=success_env_ids[i]
-                    self.save_first_env_images(index=index, reverse = True)
+                    seg = self.gym.get_camera_image(
+                        self.sim,
+                        self.env_ptrs[i],
+                        self.camera_handles[i]["panda"],
+                        gymapi.IMAGE_SEGMENTATION
+                    ).reshape(self.cam_props.height, self.cam_props.width)
+                    self.save_first_env_images(index=index, reverse = False, mask = None)
                 os._exit(0)
-            # log_steps=80
+            mask_list=[]
+            if success_env_ids.shape[0]==0:
+                os._exit(0)
+            for i in range(success_env_ids.shape[0]):
+                    index=success_env_ids[i]
+                    seg = self.gym.get_camera_image(
+                        self.sim,
+                        self.env_ptrs[i],
+                        self.camera_handles[i]["panda"],
+                        gymapi.IMAGE_SEGMENTATION
+                    ).reshape(self.cam_props.height, self.cam_props.width)
+                    mask_list.append(seg)
+            mask_uint8 = np.stack(mask_list).astype(np.uint8)
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
                 f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
@@ -1589,7 +1762,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # f.create_dataset("camera1_depth", data=cam1_depth, compression="gzip", compression_opts=4)
                 # f.create_dataset("camera2_depth", data=cam2_depth, compression="gzip", compression_opts=4)
                 if VISUALIZE_RGB:
-                    f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4)
+                    f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4,chunks=True)
+                    f.create_dataset("mask", data=mask_uint8, compression="gzip", compression_opts=1)
                 f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4, chunks=True)
             print(f"Saved trajectory to {log_filename}")
             # import pdb;pdb.set_trace()

@@ -273,8 +273,16 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
             socket_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
             socket_handle = self.gym.create_actor(env_ptr, socket_assets[j], socket_pose, 'socket', i , 0, 0)
             self.socket_actor_ids_sim.append(actor_count)
+            num_bodies=self.gym.get_actor_rigid_body_count(env_ptr, socket_handle)
+            for body_idx in range(num_bodies):                
+                # assign segmentation = 1 (or any ID you want)
+                self.gym.set_rigid_body_segmentation_id(
+                    env_ptr,
+                    socket_handle,
+                    body_idx,
+                    1
+                )
             actor_count += 1
-
             table_handle = self.gym.create_actor(env_ptr, table_asset, table_pose, 'table', i, 0, 0)
             self.table_actor_ids_sim.append(actor_count)
             actor_count += 1
@@ -375,6 +383,7 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
                                                                                     'panda_fingertip_centered',
                                                                                    gymapi.DOMAIN_ACTOR)
         self.panda_camera_id=self.gym.find_actor_rigid_body_index(env_ptr,franka_handle,'panda_camera', gymapi.DOMAIN_ACTOR)
+        
         print("Add Panda Camera")
 
     def _acquire_env_tensors(self):
