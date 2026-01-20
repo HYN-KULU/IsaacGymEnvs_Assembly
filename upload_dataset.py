@@ -46,6 +46,7 @@ def zip_and_upload(asset_dir: str):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             for root, _, files in os.walk(asset_path):
                 for file in files:
+                    print(file)
                     full_path = os.path.join(root, file)
                     rel_path = os.path.relpath(full_path, SOURCE_DIR)
                     zipf.write(full_path, rel_path)
@@ -77,7 +78,7 @@ def main():
     ])
     # import pdb;pdb.set_trace()
     print(f"Found {len(asset_dirs)} assets")
-    asset_dirs=['asset_00681']
+    asset_dirs=['asset_00598']
     nproc = min(NUM_PROCESSES, cpu_count())
     print(f"Using {nproc} processes")
 

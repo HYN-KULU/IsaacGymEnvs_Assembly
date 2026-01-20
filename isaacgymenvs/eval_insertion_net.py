@@ -129,10 +129,10 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
-    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_insertion_net_action.h5")
-    h5_init_depth=h5py.File("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_insertion_net_init_depth.h5", "r")
-    task_id=envs.cfg_task.env.desired_subassemblies[0]
-    task_id_mapping={"asset_00021":0, "asset_00028":1, "asset_00030":2, "asset_00042":3, "asset_00110":4, "asset_00681":5}
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/insertion_net_multitask_ckpt/processed_dataset_depth_relative_insertion_net_action.h5")
+    # h5_init_depth=h5py.File("/home/ubuntu/automate/IsaacGymEnvs_Assembly/processed_dataset_depth_relative_insertion_net_init_depth.h5", "r")
+    # task_id=envs.cfg_task.env.desired_subassemblies[0]
+    # task_id_mapping={"asset_00021":0, "asset_00028":1, "asset_00030":2, "asset_00042":3, "asset_00110":4, "asset_00681":5}
     # init_depth=h5_init_depth["init_depth"][task_id_mapping[task_id]]
     # init_depth=torch.from_numpy(init_depth).cuda()
     # init_depth = torch.clamp(init_depth, min=-0.5, max=0.0)
@@ -148,7 +148,8 @@ def run_env(cfg: DictConfig):
     pos_max = delta_pos.max(axis=(0,1))
     rot_min=delta_rot.min(axis=(0,1))
     rot_max=delta_rot.max(axis=(0,1))
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/insertion_net_ckpt/epoch_60.pt"  # or policy_last.ckpt
+    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/insertion_net_ckpt/epoch_60.pt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/insertion_net_multitask_ckpt/epoch_150.pt"  # or policy_last.ckpt
     policy = InsertionNet(
         feature_dim=512,
         hidden_dim=512,
@@ -168,7 +169,6 @@ def run_env(cfg: DictConfig):
         new_state_dict[new_key] = v
 
     policy.load_state_dict(new_state_dict, strict=True)
-    print("Loaded epoch_60")
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
     envs.reset_idx(env_ids)
     init_plug_pos = envs.plug_pos.clone()
@@ -182,48 +182,78 @@ def run_env(cfg: DictConfig):
     envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
     torch.set_printoptions(precision=5, sci_mode=False)
     # init depth
-    for t in range(100):
-        print("Timestep: ",t)
-        fingertip_centered_pos=envs.fingertip_centered_pos.clone()
-        fingertip_centered_quat=envs.fingertip_centered_quat.clone()
-        ## Process the depth data
-        # Current Depth
-        depth=torch.from_numpy(envs.get_wrist_camera_depth()).cuda()
-        depth = torch.clamp(depth, min=-0.5, max=0.0)
-        depth = (depth - (-0.1890)) / 0.0795
-        depth = depth.squeeze(0).unsqueeze(1).cuda()          # (12,1,480,640)
+    dists=[]
+    for trial in range(5):
+        print("===== Trial ", trial, " =====")
+        for t in range(30):
+            print("Timestep: ",t)
+            fingertip_centered_pos=envs.fingertip_centered_pos.clone()
+            fingertip_centered_quat=envs.fingertip_centered_quat.clone()
+            ## Process the depth data
+            # Current Depth
+            depth=torch.from_numpy(envs.get_wrist_camera_depth()).cuda()
+            depth = torch.clamp(depth, min=-0.5, max=0.0)
+            depth = (depth - (-0.1890)) / 0.0795
+            depth = depth.squeeze(0).unsqueeze(1).cuda()          # (12,1,480,640)
 
-        raw_actions=policy(depth,init_depth)
-        predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
-        next_tgt_pos=envs.fingertip_centered_pos.clone()
-        next_tgt_quat=envs.fingertip_centered_quat.clone()
-        tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
-        tcp_9d=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
-        # Freeze the simulation
-        envs.gym.fetch_results(envs.sim, True)
-        envs.gym.sync_frame_time(envs.sim)
-        envs.refresh_base_tensors()
-        envs.refresh_env_tensors()
-        # delta_pos = predict_actions[:,:3]
-        # delta_pos[:,2] = -0.0005
-        # next_tgt_pos = next_tgt_pos + delta_pos     
-        # delta_quat=predict_actions[:,3:]
-        print(predict_actions[:,:3])
-        predict_actions[:,2] = -0.0005
-        next_tcp_9d = tcp_9d + predict_actions
-        next_tcp = torch.from_numpy(xyz_rot_transform(next_tcp_9d.detach().cpu().numpy(),from_rep="rotation_6d", to_rep="quaternion")).cuda()
-        envs._move_gripper_to_eef_pose(env_ids, 
-                                            ctrl_tgt_pos=next_tcp[:,:3], 
-                                            ctrl_tgt_quat=envs.fingertip_centered_quat.clone(), 
-                                            sim_steps=50, 
-                                            if_log=True, 
-                                            close_gripper=True,
-                                            log_freq=30,
-                                            log_extra=True
-                                            )
-    # Visualize
-    for env_id in range(12):
-        envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+            raw_actions=policy(depth,init_depth)
+            print(raw_actions)
+            predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
+            print(predict_actions)
+            next_tgt_pos=envs.fingertip_centered_pos.clone()
+            next_tgt_quat=envs.fingertip_centered_quat.clone()
+            tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
+            tcp_9d=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
+            # Freeze the simulation
+            envs.gym.fetch_results(envs.sim, True)
+            envs.gym.sync_frame_time(envs.sim)
+            envs.refresh_base_tensors()
+            envs.refresh_env_tensors()
+            # delta_pos = predict_actions[:,:3]
+            # delta_pos[:,2] = -0.0005
+            # next_tgt_pos = next_tgt_pos + delta_pos     
+            # delta_quat=predict_actions[:,3:]
+            # print(predict_actions[:,:3])
+            predict_actions[:,2] = -0.002
+            next_tcp_9d = tcp_9d + predict_actions
+            next_tcp = torch.from_numpy(xyz_rot_transform(next_tcp_9d.detach().cpu().numpy(),from_rep="rotation_6d", to_rep="quaternion")).cuda()
+            envs._move_gripper_to_eef_pose(env_ids, 
+                                                ctrl_tgt_pos=next_tcp[:,:3], 
+                                                ctrl_tgt_quat=envs.fingertip_centered_quat.clone(), 
+                                                sim_steps=50, 
+                                                if_log=True, 
+                                                close_gripper=True,
+                                                log_freq=30,
+                                                log_extra=True
+                                                )
+        # Visualize
+        # for env_id in range(12):
+        #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+        quat_success = envs.plug_quat[envs.success_env_ids]
+        w = quat_success[:, 3]
+
+        vertical_mask = w > 0.85
+        valid_ids = envs.success_env_ids[vertical_mask.cpu()]
+        plug_pos = envs.plug_pos[valid_ids]
+        init_pos = envs.init_plug_pos[valid_ids]
+
+        delta_xy = plug_pos[:, :2] - init_pos[:, :2]
+        dist_xy = torch.norm(delta_xy, dim=1)
+
+        dist_z = torch.abs(plug_pos[:, 2] - init_pos[:, 2])
+
+        dist_list = list(
+            zip(
+                dist_xy.detach().cpu().tolist(),
+                dist_z.detach().cpu().tolist()
+            )
+        )
+        # for env_id in range(12):
+        #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+
+        # print("Final (XY dist, Z dist) for successful vertical plugs:", dist_list)
+        dists.extend(dist_list)
+    np.save(f"eval_insertion_net/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
     import pdb;pdb.set_trace()
     
     os._exit(0)
