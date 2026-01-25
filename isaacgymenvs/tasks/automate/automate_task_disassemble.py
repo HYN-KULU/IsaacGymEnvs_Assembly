@@ -1132,6 +1132,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 camera2_depth_list = []
                 camera3_rgb_list=[]
                 camera3_depth_list=[]
+                camera3_mask_list=[]
+                camera3_vinv_list=[]
+                camera3_proj_list=[]
                 height, width = 480, 640
                 def fetch_image(env_id, cam_handle, cam_type, height, width):
                     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
@@ -1141,6 +1144,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                         img = img.reshape(height, width)
                         # return np.where(np.isinf(img), np.nan, img)
                         return img
+                    elif cam_type == gymapi.IMAGE_SEGMENTATION:
+                        img = img.reshape(height, width)
+                        return img
+                # for i in range(success_env_ids.shape[0]):
+            #         index=success_env_ids[i]
+            #         seg = self.gym.get_camera_image(
+            #             self.sim,
+            #             self.env_ptrs[i],
+            #             self.camera_handles[i]["panda"],
+            #             gymapi.IMAGE_SEGMENTATION
+            #         ).reshape(self.cam_props.height, self.cam_props.width)
+            #         mask_list.append(seg)
                 with ThreadPoolExecutor(max_workers=16) as executor:
                     futures = {
                         ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
@@ -1151,6 +1166,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                             ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
                             for env_id in range(len(self.env_ptrs))
                         })
+                    futures.update({
+                        ("panda", "segmentation", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_SEGMENTATION, height, width)
+                        for env_id in range(len(self.env_ptrs))
+                    })
                     # futures.update({
                     #     ("bottom", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["bottom"], gymapi.IMAGE_COLOR, height, width)
                     #     for env_id in range(len(self.env_ptrs))
@@ -1177,6 +1196,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     if VISUALIZE_RGB:
                         camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
                     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
+                    camera3_mask_list.append(futures[("panda", "segmentation", env_id)].result())
+                    camera3_vinv_list.append(torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[env_id],self.camera_handles[env_id]["panda"]))).to(self.device).detach().cpu().numpy())
+                    camera3_proj_list.append(torch.tensor(self.gym.get_camera_proj_matrix(self.sim,self.env_ptrs[env_id],self.camera_handles[env_id]["panda"])).to(self.device).detach().cpu().numpy())
                 # seg = self.gym.get_camera_image(
                 #     self.sim,
                 #     self.env_ptrs[env_id],
@@ -1188,10 +1210,12 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
                 if VISUALIZE_RGB:
                     self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
-
+                self.camera3_mask_traj.append(np.stack(camera3_mask_list))   # (envs, H, W)
                 # self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
                 # self.camera2_depth_traj.append(np.stack(camera2_depth_list))   # (envs, H, W)
                 self.camera3_depth_traj.append(np.stack(camera3_depth_list))   # (envs, H, W)
+                self.camera3_vinv_traj.append(np.stack(camera3_vinv_list))   # (envs, 4,4)
+                self.camera3_proj_traj.append(np.stack(camera3_proj_list))   # (envs, 4,4)
                 self.gym.end_access_image_tensors(self.sim)
                 # imageio.imwrite("camera_top.png", self.camera1_rgb_traj[0][0].astype(np.uint8))
                 # img=self.camera1_rgb_traj[0][0]
@@ -1390,6 +1414,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         rand_pos_offset[:, 2] = 0.005 * torch.rand((self.num_envs,), device=self.device) + 0.005  
         ctrl_tgt_pos += rand_pos_offset
         ctrl_tgt_pos[:,2] += self.disassembly_dists * 3.0
+
         # ---- Step 2: Randomize target rotation ----
         base_euler = torch.tensor(
             self.cfg_task.randomize.fingertip_centered_rot_initial, device=self.device
@@ -1586,6 +1611,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.camera3_rgb_traj=[]
         # Camera 3 depth
         self.camera3_depth_traj=[]
+        self.camera3_mask_traj=[]
+        self.camera3_vinv_traj=[]
+        self.camera3_proj_traj=[]
 
         self.init_plug_grasp_pos = self.plug_grasp_pos.clone().detach()
         self.init_plug_grasp_quat = self.plug_grasp_quat.clone().detach()
@@ -1699,7 +1727,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "flow_1206", self.cfg_task.env.desired_subassemblies[0],
+                "flow_0125_gt", self.cfg_task.env.desired_subassemblies[0],
                 f"disassembly_traj_{self.cfg['seed']}.h5"
             )
             log_dir = os.path.dirname(log_filename)
@@ -1708,7 +1736,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             success_env_ids=self.success_env_ids
             if  LOG_VISUAL:
                 # success_env_ids = torch.tensor([0,1])
-                success_env_ids = torch.tensor([0,1,2,3,4,5,6,7,8,9,10,11])
+                success_env_ids = torch.tensor([0,1])
             if LOG_VISUAL:
                 for i in range(success_env_ids.shape[0]):
                     index=success_env_ids[i]
@@ -1723,16 +1751,17 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             mask_list=[]
             if success_env_ids.shape[0]==0:
                 os._exit(0)
-            for i in range(success_env_ids.shape[0]):
-                    index=success_env_ids[i]
-                    seg = self.gym.get_camera_image(
-                        self.sim,
-                        self.env_ptrs[i],
-                        self.camera_handles[i]["panda"],
-                        gymapi.IMAGE_SEGMENTATION
-                    ).reshape(self.cam_props.height, self.cam_props.width)
-                    mask_list.append(seg)
-            mask_uint8 = np.stack(mask_list).astype(np.uint8)
+            # for i in range(success_env_ids.shape[0]):
+            #         index=success_env_ids[i]
+            #         seg = self.gym.get_camera_image(
+            #             self.sim,
+            #             self.env_ptrs[i],
+            #             self.camera_handles[i]["panda"],
+            #             gymapi.IMAGE_SEGMENTATION
+            #         ).reshape(self.cam_props.height, self.cam_props.width)
+            #         mask_list.append(seg)
+            mask_uint8 = np.stack(self.camera3_mask_traj, axis=0).astype(np.uint8)[:,success_env_ids,...]
+            # mask_uint8 = np.stack(mask_list).astype(np.uint8)
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
                 f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
@@ -1755,6 +1784,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # cam1_depth = np.stack(self.camera1_depth_traj, axis=0).astype(np.float32)  # (180, N, H, W)
                 # cam2_depth = np.stack(self.camera2_depth_traj, axis=0).astype(np.float32)
                 cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
+                cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
+                cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
+                f.create_dataset("camera3_vinv", data=cam3_vinv, compression="gzip", compression_opts=4, chunks=True)
+                f.create_dataset("camera3_proj", data=cam3_proj, compression="gzip", compression_opts=4, chunks=True)
                 print("Finish Converting")
                 # Save with compression
                 # f.create_dataset("camera1_rgb", data=cam1_rgb, compression="gzip", compression_opts=4)
