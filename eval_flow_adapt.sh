@@ -6,14 +6,12 @@ conda activate rlgpu
 # train_tasks=(
 #   00004 
 # )
-# 00081 -> 00345
-# 00597 -> 00614
 train_tasks=(
-  # 00345 00360 00028 00103 00553 00731 00015 00648 00506 00614
-  # 00360
-  # 00360
-  # 00345
-  00015
+#  00731
+# 00015
+# 00648
+00360
+# 00681
 )
 # train_tasks=(
 #   00004 00016 00021 00030 00074 00078 00110 00117 00133 00138
@@ -32,7 +30,7 @@ for task_id in "${train_tasks[@]}"; do
     echo "Evaluating task: ${task_id}"
     echo "=============================="
 
-    python eval_depth_relative.py \
+    python eval_depth_relative_flow_cond_adapt.py \
         task=AutoMateTaskDisassemble \
         task.env.overwrite_subassemblies=True \
         task.env.desired_subassemblies="['asset_${task_id}']" \

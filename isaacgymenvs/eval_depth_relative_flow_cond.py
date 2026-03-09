@@ -132,7 +132,7 @@ def depth_to_vis(depth):
 
     d = (d * 255).astype(np.uint8)
     return cv2.cvtColor(d, cv2.COLOR_GRAY2RGB)
-def draw_arrows(img, flow, stride=6, scale=5):
+def draw_arrows(img, flow, stride=6, scale=5, eps=1e-6):
     if hasattr(flow, "detach"):
         flow = flow.detach().cpu().numpy()
 
@@ -146,14 +146,23 @@ def draw_arrows(img, flow, stride=6, scale=5):
             dx = u[y, x]
             dy = v[y, x]
 
+            # ---------- 核心：flow 为 0 就不画 ----------
+            if dx * dx + dy * dy < eps:
+                continue
+
             x2 = int(x + dx * scale)
             y2 = int(y + dy * scale)
 
-            cv2.arrowedLine(out, (x, y), (x2, y2),
-                            color=(0, 255, 0),
-                            thickness=1,
-                            tipLength=0.3)
+            cv2.arrowedLine(
+                out,
+                (x, y),
+                (x2, y2),
+                color=(0, 0, 255),
+                thickness=1,
+                tipLength=0.3
+            )
     return out
+
 
 def flow_to_direction(flow, eps=1e-6):
     """
@@ -180,6 +189,30 @@ def flow_to_hsv(flow):
     hsv[..., 2] = (mag / (mag.max() + 1e-8) * 255).astype(np.uint8)
 
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+
+def shift_np_integer(x, dx, dy):
+    """
+    x: (C,H,W)
+    dx, dy: integers
+    """
+    dx = int(round(dx))
+    dy = int(round(dy))
+
+    y = np.roll(x, shift=(dy, dx), axis=(1, 2))
+
+    # zero out wrapped region (important!)
+    if dy > 0:
+        y[:, :dy, :] = 0
+    elif dy < 0:
+        y[:, dy:, :] = 0
+
+    if dx > 0:
+        y[:, :, :dx] = 0
+    elif dx < 0:
+        y[:, :, dx:] = 0
+
+    return y
 
 @hydra.main(version_base="1.1", config_name="config", config_path="./cfg")
 def run_env(cfg: DictConfig):
@@ -224,6 +257,7 @@ def run_env(cfg: DictConfig):
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask_0113/policy_epoch_305.ckpt"  # or policy_last.ckpt
+    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_0127_mean_centered/policy_epoch_95.ckpt"  # or policy_last.ckpt
     # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask_00681/policy_epoch_300.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
@@ -236,6 +270,7 @@ def run_env(cfg: DictConfig):
     policy.load_state_dict(state_dict, strict=True)
     policy.eval()
     flow_policy = FlowPolicy().to(device)
+    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/mean_centered_flow_net_multi_ckpt/epoch_65.pt", map_location=device)
     ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_multitask_ckpt/multitask_last.pt", map_location=device)
     # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_multitask_ckpt/epoch_00360_20.pt", map_location=device)
 
@@ -281,9 +316,12 @@ def run_env(cfg: DictConfig):
             envs.refresh_env_tensors()
             ## Process the depth data
             depth = envs.get_wrist_camera_depth()
+            camera_rgb = envs.get_wrist_camera_rgb()
             rotated_depth_list=[]
+            rotated_rgb_list=[]
             for i in range(12):
                 rotated_depth_list.append(np.rot90(depth[i], 2))
+                rotated_rgb_list.append(np.rot90(camera_rgb[i], 2))
             depth_rot = np.stack(rotated_depth_list)
             depth_rot = torch.from_numpy(depth_rot).cuda()
             depth_rot = torch.clamp(depth_rot, min=-0.5, max=0.0)
@@ -297,39 +335,88 @@ def run_env(cfg: DictConfig):
             pred_flow_list=[]
             with torch.no_grad():
                 for i in range(12):
-                    pred_flow=flow_policy(torch.from_numpy(np.rot90(mask[i], 2)[::rate, ::rate].copy()).unsqueeze(0).unsqueeze(0).cuda(),depth_rot[i][::rate, ::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
-                    mask_np = (np.rot90(mask[i], 2)[::rate, ::rate] > 0).astype(np.float32)
+                    # mask processing
+                    # (1) Rotate (2) Mean-centered (3) Subsample
+                    # mask_rot = np.rot90(mask[i], 2)
+                    # mask_rot_extend = np.expand_dims(mask_rot,axis = 0)
+                    # ys,xs = np.where(mask_rot > 0)
+                    # cy = ys.mean()
+                    # cx = xs.mean()
+                    # H,W = mask_rot.shape
+                    # target_y = H / 2.0
+                    # target_x = W / 2.0
+                    # dy = target_y - cy
+                    # dx = target_x - cx
+                    # mask_rot_centered = shift_np_integer(mask_rot_extend, dx, dy)[0]
+                    # mask_input = mask_rot_centered[::rate, ::rate].copy()
+                    mask_input = np.rot90(mask[i], 2)[::rate, ::rate].copy()
+                    # pred_flow=flow_policy(torch.from_numpy(np.rot90(mask[i], 2)[::rate, ::rate].copy()).unsqueeze(0).unsqueeze(0).cuda(),depth_rot[i][::rate, ::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
+                    pred_flow=flow_policy(torch.from_numpy(mask_input).unsqueeze(0).unsqueeze(0).cuda(),depth_rot[i][::rate, ::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
+                    mask_np = (mask_input > 0).astype(np.float32)
                     pred_flow = pred_flow * mask_np
-                    # if i == 8:
-                    #     rgb = np.rot90(envs.get_wrist_camera_rgb()[i], 2)[::rate, ::rate, :].copy()  # (H, W, 3), uint8 usually
-                    #     vis_flow = pred_flow  # (2, H, W)
+                    if i != 12:
+                            scale = 3
+                            stride = 12
+                            arrow_scale = 4.0
 
-                    #     # ---- flow ----
-                    #     flow_dir = flow_to_direction(vis_flow)
+                            # -------------------------
+                            # prepare RGB
+                            # -------------------------
+                            rgb = rotated_rgb_list[i][::rate,::rate, :].copy()          # (H, W, 3)
+                            rgb = cv2.resize(
+                                rgb, None, fx=scale, fy=scale,
+                                interpolation=cv2.INTER_LINEAR
+                            )
+                            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
-                    #     stride = 1
-                    #     arrow_scale = 4.0
-                    #     sparse_flow = np.zeros_like(flow_dir)
-                    #     sparse_flow[:, ::stride, ::stride] = flow_dir[:, ::stride, ::stride]
-                    #     sparse_flow *= arrow_scale
+                            # -------------------------
+                            # prepare mask background
+                            # -------------------------
+                            # IMPORTANT: do NOT modify mask_np in-place
+                            if mask_np.ndim == 3:
+                                mask_2d = mask_np[0]
+                            else:
+                                mask_2d = mask_np
 
-                    #     flow_hsv = flow_to_hsv(vis_flow)
-                    #     flow_vis = draw_arrows(flow_hsv, sparse_flow)
-                    #     # ---- resize rgb if needed ----
-                    #     if rgb.shape[:2] != flow_vis.shape[:2]:
-                    #         rgb = cv2.resize(
-                    #             rgb,
-                    #             (flow_vis.shape[1], flow_vis.shape[0]),
-                    #             interpolation=cv2.INTER_NEAREST
-                    #         )
-                    #     rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                            H, W = mask_2d.shape
+                            bg = np.zeros((H, W, 3), dtype=np.uint8) # shape 240, 320, 3
+                            bg[mask_2d > 0] = 255  # white inside mask
 
-                    #     # ---- concat & save ----
-                    #     vis = np.concatenate([rgb_bgr, flow_vis], axis=1)
+                            bg = cv2.resize(
+                                bg, None, fx=scale, fy=scale,
+                                interpolation=cv2.INTER_NEAREST
+                            )
 
-                    #     os.makedirs("./flow_vis", exist_ok=True)
-                    #     out_path = f"./flow_vis/rgb_flow_{t}.png"
-                    #     cv2.imwrite(out_path, vis)
+                            # -------------------------
+                            # flow → direction
+                            # -------------------------
+                            vis_flow = pred_flow                     # (2, H, W)
+                            flow_dir = flow_to_direction(vis_flow)   # (2, H, W)
+
+                            flow_dir = cv2.resize(
+                                flow_dir.transpose(1, 2, 0),
+                                None, fx=scale, fy=scale,
+                                interpolation=cv2.INTER_LINEAR
+                            ).transpose(2, 0, 1)
+
+                            # sparse arrows
+                            sparse_flow = np.zeros_like(flow_dir)
+                            sparse_flow[:, ::stride, ::stride] = flow_dir[:, ::stride, ::stride]
+                            sparse_flow *= arrow_scale
+
+                            # draw arrows on mask background
+                            flow_vis = draw_arrows(bg, sparse_flow)
+
+                            # -------------------------
+                            # concat & save
+                            # -------------------------
+                            vis = np.concatenate([rgb_bgr, flow_vis], axis=1)
+
+                            out_dir = f"./flow_vis/{i}"
+                            os.makedirs(out_dir, exist_ok=True)
+                            out_path = f"{out_dir}/rgb_flow_{t}.png"
+                            cv2.imwrite(out_path, vis)
+
                         # vis_flow = pred_flow                      # (2, H, W)
                         # depth_small = depth_rot[i][::rate, ::rate].cpu().numpy()  # (H, W)
 
@@ -458,7 +545,7 @@ def run_env(cfg: DictConfig):
 
         # print("Final (XY dist, Z dist) for successful vertical plugs:", dist_list)
         dists.extend(dist_list)
-    np.save(f"eval_result/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
+    np.save(f"eval_result_mean_flow/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
         #cfg_task.env.desired_subassemblies[0]
     # Visualize
     # envs._save_log_traj()

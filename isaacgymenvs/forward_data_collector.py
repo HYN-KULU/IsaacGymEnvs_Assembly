@@ -101,6 +101,73 @@ def save_video_from_images(image_list, out_path="output_video.mp4", fps=10):
     imageio.mimsave(out_path, frames, fps=fps)
     print(f"Saved video: {out_path}")
 
+def compute_insert_action(delta_pos):
+    """
+    delta_pos: (N,3) tensor, plug_pos error (target - current)
+
+    return:
+        action: (N,3)
+    """
+
+    action = torch.zeros_like(delta_pos)
+
+    delta_xy = delta_pos[:, :2]
+    delta_xy_norm = torch.norm(delta_xy, dim=1, keepdim=True)
+
+    tmp = delta_pos.clone()
+    tmp[:, 2] = 0
+    delta_norm = torch.norm(tmp, dim=1, keepdim=True) + 1e-8
+    # print(delta_pos)
+    # print(delta_xy_norm)
+    mask1 = (delta_xy_norm[:,0] > 0.002)
+    mask2 = (delta_xy_norm[:,0] <= 0.002) & (delta_xy_norm[:,0] > 0.001)
+    mask3 = (delta_xy_norm[:,0] <= 0.001) & (delta_xy_norm[:,0] > 0.0003)
+    mask4 = (delta_xy_norm[:,0] <= 0.0003) & (delta_xy_norm[:,0] > 0.0001)
+    mask5 = (delta_xy_norm[:,0] < 0.0001)
+
+    # branch1
+    action[mask1.squeeze()] = tmp[mask1.squeeze()] / delta_norm[mask1] * 0.0003
+
+    # branch2
+    action[mask2.squeeze()] = tmp[mask2.squeeze()] / delta_norm[mask2] * 0.00015
+
+    # branch3
+    action[mask3.squeeze()] = tmp[mask3.squeeze()] / 5 
+    action[mask3.squeeze(), 2] = -0.0001
+
+    # branch4
+    action[mask4.squeeze()] = tmp[mask4.squeeze()] 
+    action[mask4.squeeze(), 2] = -0.0002
+
+    # branch5
+    action[mask5.squeeze()] = tmp[mask5.squeeze()] 
+    action[mask5.squeeze(), 2] = -0.0004
+    action_xy = action[:, :2]
+    action_xy_norm = torch.norm(action_xy, dim=1, keepdim=True)
+
+    # min_norm = 0.0005
+
+    # scale = torch.clamp(min_norm / (action_xy_norm + 1e-8), min=1.0)
+
+    # action[:, :2] = action[:, :2] * scale
+    # print(action)
+    return action
+
+TRAIN_TASKS = {
+    "00004", "00015", "00016", "00021", "00028", "00030", "00042",
+    "00074", "00077", "00078", "00081", "00103", "00110", "00117",
+    "00133", "00138", "00141", "00163", "00175", "00186", "00187",
+    "00192", "00211", "00213", "00255", "00256", "00271", "00293",
+    "00301", "00318", "00319", "00320", "00329", "00345", "00346",
+    "00360", "00388", "00410", "00417", "00422", "00426", "00437",
+    "00444", "00446", "00471", "00480", "00499", "00506", "00514",
+    "00537", "00553", "00559", "00581", "00597", "00614", "00615",
+    "00638", "00648", "00649", "00659", "00681", "00686", "00700",
+    "00703", "00726", "00731", "00768", "00783", "00855", "00860",
+    "01026", "01029", "01036", "01041", "01079", "01092", "01102",
+    "01129", "01132", "01136"
+}
+
 @hydra.main(version_base="1.1", config_name="config", config_path="./cfg")
 def run_env(cfg: DictConfig):
     device="cuda"
@@ -138,47 +205,37 @@ def run_env(cfg: DictConfig):
     envs.disassemble_plug_from_socket_eval_init()
     save_dir = "eval_visual"
     os.makedirs(save_dir, exist_ok=True)
-    envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
+    # envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
     torch.set_printoptions(precision=5, sci_mode=False)
     image_list=[[] for _ in range(12)]
-    target_final_pos=torch.tensor([4.3678e-04, 1.3084e-03, 4.5973e-01], device='cuda:0')
     offset = torch.zeros(12, 3)
     # -0.01 ~ 0.01 for task 00042
     offset[:, :2] = (torch.rand(12, 2) * 0.02) - 0.01 
     
     nums = random.sample(range(200), 50)
-    # Test Min Height
-    # 00861: 0.418
-    min_height = 0
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00681":
-        min_height = 0.418
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00028":
-        min_height = 0.4234
-    if envs.cfg_task.env.desired_subassemblies[0] == "asset_00030":
-        min_height = 0.413
     action_list=[]
     depth_list=[]
-    for i in range(60):
+    for i in range(150):
+    # for i in range(200):
         print(f"Step {i}")
-        log_step=False
-        delta_pos = init_plug_pos - envs.plug_pos 
-        delta_pos[:,1] +=0.015
-        delta_pos[:,0] +=0.02
-        delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8
-        target_length = 0.004 * (3 ** 0.5)
-        delta_pos = delta_pos / delta_norm * target_length
-        delta_pos[:,2] = -0.0004
-        plug_height = envs.plug_pos[:, 2]  # shape [N]
-        freeze_mask = (plug_height <= min_height).unsqueeze(1)  # shape [N,1] for broadcasting
-        # freeze delta_pos to 0 where height <= min_height
-        delta_pos = torch.where(freeze_mask, torch.zeros_like(delta_pos), delta_pos)
+        # log_step=False
+        delta_pos = init_plug_pos - envs.plug_pos
+        if i < 100:
+            delta_pos = delta_pos + offset.cuda() / 3
+            log_step = False
+        else:
+            log_step = True
+        # delta_pos = envs.socket_pos - envs.plug_pos 
+        delta_xy = delta_pos[:, :2]
+        action = compute_insert_action(delta_pos)
+        # action[:] = 0
         envs.gym.fetch_results(envs.sim, True)
         envs.gym.sync_frame_time(envs.sim)
         envs.refresh_base_tensors()
         envs.refresh_env_tensors()
-        next_tgt_pos=envs.fingertip_centered_pos.clone() + delta_pos
+        next_tgt_pos=envs.fingertip_centered_pos.clone() + action
         next_tgt_quat=envs.fingertip_centered_quat.clone()
-        action_list.append(delta_pos.detach().cpu().numpy())
+        action_list.append(action.detach().cpu().numpy())
         envs._move_gripper_to_eef_pose(env_ids, 
                                         ctrl_tgt_pos=next_tgt_pos, 
                                         ctrl_tgt_quat=next_tgt_quat, 
@@ -196,19 +253,13 @@ def run_env(cfg: DictConfig):
     
     action_array=np.stack(action_list)
     zeros = np.zeros((action_array.shape[0], action_array.shape[1], 6))
-    # cond_z = envs.plug_pos[:, 2] < 0.425
-    # Condition 2: XY distance < 0.0005
-    # diff = init_plug_pos - envs.plug_pos                # shape (N, 3)
-    # xy_dist = torch.norm(diff[:, :2], dim=1)            # shape (N,)
-    # cond_xy = xy_dist < 0.001
-
-    # Combine conditions
-    # valid_idx = torch.nonzero(cond_z & cond_xy, as_tuple=False).squeeze(1)
     action_array_padded = np.concatenate([action_array, zeros], axis=-1)
+    print(envs.success_env_ids)
     # envs.success_env_ids=np.intersect1d(envs.success_env_ids, valid_idx.cpu().numpy())
-     # for env_id in range(12):
-    #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False) 
-    envs._save_log_traj(action_array_padded)  
+    if cfg.seed == 0:
+        for env_id in range(12):
+            envs.save_first_env_images(out_dir=f"rollout/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
+    # envs._save_log_traj(action_array_padded)  
     os._exit(0)
 
 

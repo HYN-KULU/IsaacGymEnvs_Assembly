@@ -11,10 +11,10 @@ import torch
 from collections import OrderedDict
 # from policy.diffusion_policy import Diffusion_Policy
 from dataset.diffusion_policy_dataset import DepthActionDataset
-from policy.diffusion_policy_flow_cond import Diffusion_Policy
+from policy.diffusion_policy_3dflow import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
-from policy.flow_policy import FlowPolicy
+from policy.flow_3dgt_mask_policy import FlowPolicy
 def load_processed_dataset(filename):
     import h5py
     data = {}
@@ -52,7 +52,7 @@ def unnormalize_actions(actions, pos_min, pos_max, rot_min,rot_max, scale_to_uni
 
 import imageio
 import numpy as np
-
+import math
 def normalize_xy_min_length(delta_pos, i, min_length=0.0005):
     """
     Normalize xy direction of delta_pos while keeping magnitude >= min_length.
@@ -132,7 +132,7 @@ def depth_to_vis(depth):
 
     d = (d * 255).astype(np.uint8)
     return cv2.cvtColor(d, cv2.COLOR_GRAY2RGB)
-def draw_arrows(img, flow, stride=6, scale=5):
+def draw_arrows(img, flow, stride=6, scale=5, eps=1e-6):
     if hasattr(flow, "detach"):
         flow = flow.detach().cpu().numpy()
 
@@ -146,40 +146,129 @@ def draw_arrows(img, flow, stride=6, scale=5):
             dx = u[y, x]
             dy = v[y, x]
 
+            # ---------- 核心：flow 为 0 就不画 ----------
+            if dx * dx + dy * dy < eps:
+                continue
+
             x2 = int(x + dx * scale)
             y2 = int(y + dy * scale)
 
-            cv2.arrowedLine(out, (x, y), (x2, y2),
-                            color=(0, 255, 0),
-                            thickness=1,
-                            tipLength=0.3)
+            cv2.arrowedLine(
+                out,
+                (x, y),
+                (x2, y2),
+                color=(0, 0, 255),
+                thickness=1,
+                tipLength=0.3
+            )
     return out
 
-def flow_to_direction(flow, eps=1e-6):
+
+# def flow_to_direction(flow, eps=1e-6):
+#     """
+#     flow: (2, H, W)
+#     return: (2, H, W), unit direction field
+#     """
+#     mag = np.linalg.norm(flow, axis=0, keepdims=True)  # (1,H,W)
+#     return flow / (mag + eps)
+
+def visualize_flow_and_mask(flow, mask, rgb, rate=2, prefix="vis"):
     """
-    flow: (2, H, W)
-    return: (2, H, W), unit direction field
+    flow: (2, 480, 640)
+    mask: (1, 1, 240, 320) or (240, 320)
+    rgb : (3, 480, 640) or (480, 640, 3)
+
+    Output:
+    - Left : RGB image
+    - Right: white-mask background + flow arrows
     """
-    mag = np.linalg.norm(flow, axis=0, keepdims=True)  # (1,H,W)
-    return flow / (mag + eps)
-def flow_to_hsv(flow):
-    if hasattr(flow, "detach"):
-        flow = flow.detach().cpu().numpy()
+    # -------------------------
+    # Prepare RGB
+    # -------------------------
+    if hasattr(rgb, "detach"):
+        rgb = rgb.detach().cpu().numpy()
 
-    u = flow[0]
-    v = flow[1]
+    if rgb.shape[0] == 3:
+        rgb_img = np.transpose(rgb, (1, 2, 0))  # (H,W,3)
+    else:
+        rgb_img = rgb.copy()
 
-    mag = np.sqrt(u*u + v*v)
-    ang = np.arctan2(v, u)
+    rgb_img = rgb_img.astype(np.uint8)
+    rgb_img = rgb_img[..., ::-1][::rate, ::rate, :]  # BGR & downsample
 
+    # -------------------------
+    # Prepare flow
+    # -------------------------
+    flow_uv = flow[:2]
+    # flow_z = flow[2][0][0]
+    if hasattr(flow_uv, "detach"):
+        flow_uv = flow_uv.detach().cpu().numpy()
+
+    u = flow_uv[0]
+    v = flow_uv[1]
     H, W = u.shape
-    hsv = np.zeros((H, W, 3), dtype=np.uint8)
 
-    hsv[..., 0] = ((ang + np.pi) / (2*np.pi) * 180).astype(np.uint8)
-    hsv[..., 1] = 255
-    hsv[..., 2] = (mag / (mag.max() + 1e-8) * 255).astype(np.uint8)
+    # -------------------------
+    # Prepare mask
+    # -------------------------
+    if hasattr(mask, "detach"):
+        mask = mask.detach().cpu().numpy()
 
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    mask_2d = mask.squeeze()
+
+    if mask_2d.shape != (H, W):
+        mask_2d = cv2.resize(
+            mask_2d.astype(np.uint8),
+            (W, H),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    mask_2d = mask_2d > 0
+
+    # -------------------------
+    # Right panel: white bg + arrows
+    # -------------------------
+    canvas = np.zeros((H, W, 3), dtype=np.uint8)
+    canvas[mask_2d] = 255
+
+    stride = rate * 3
+    scale = 12
+    # print(flow_z)
+    for y in range(0, H, stride):
+        for x in range(0, W, stride):
+
+            # if not mask_2d[y, x]:
+            #     continue
+
+            dx = u[y, x]
+            dy = v[y, x]
+
+            if dx == 0 and dy == 0:
+                continue
+            flow_z = flow[2][y,x]
+            z_rate = min(max((flow_z + 0.005) / 0.004, 0.0), 1.0)
+            x2 = int(x + dx * scale)
+            y2 = int(y - dy * scale)
+            cv2.arrowedLine(
+                canvas,
+                (x, y),
+                (x2, y2),
+                # color=(0, 0, 255),  # red (BGR)
+                color=(0, 255-int(math.floor(z_rate * 255)), int(math.floor(z_rate * 255))),  # red (BGR)
+                thickness=1,
+                tipLength=0.35,
+                line_type=cv2.LINE_AA,
+            )
+
+    # -------------------------
+    # Concatenate: left RGB | right flow
+    # -------------------------
+    vis = np.concatenate([rgb_img, canvas], axis=1)
+
+    # -------------------------
+    # Save
+    # -------------------------
+    cv2.imwrite(f"{prefix}_rgb_flow_mask_arrow.png", vis)
 
 @hydra.main(version_base="1.1", config_name="config", config_path="./cfg")
 def run_env(cfg: DictConfig):
@@ -209,10 +298,7 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
-    data=load_processed_dataset("/home/ubuntu/automate/flow_diffusion_policy_multitask_0113.h5")
-    # data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/flow_diffusion_policy_00681_0108.h5")
-    # data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask_00681/flow_diffusion_policy_multitask.h5")
-    # data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask/flow_diffusion_policy_multitask.h5")
+    data=load_processed_dataset("/home/ubuntu/automate/flow_diffusion_policy_multitask_0206.h5")
     all_actions = data['actions'][()]  # (N, K, 9)
     delta_pos = all_actions[..., 0:3]  # (N, K, 3)
     delta_rot = all_actions[...,3:]
@@ -223,8 +309,8 @@ def run_env(cfg: DictConfig):
     rot_min=torch.from_numpy(delta_rot.min(axis=(0,1))).cuda()
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask_0113/policy_epoch_305.ckpt"  # or policy_last.ckpt
-    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_diffusion_policy_multitask_00681/policy_epoch_300.ckpt"  # or policy_last.ckpt
+    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/finetune_flow_diffusion_policy_multitask_00028_0301/policy_epoch_20.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/3dgt_flow_policy/policy_epoch_360.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -236,10 +322,10 @@ def run_env(cfg: DictConfig):
     policy.load_state_dict(state_dict, strict=True)
     policy.eval()
     flow_policy = FlowPolicy().to(device)
-    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_multitask_ckpt/multitask_last.pt", map_location=device)
-    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_adaptation/00648_epoch_27.pt", map_location=device)
-    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_adaptation/epoch_31.pt", map_location=device)
-    ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/flow_net_multitask_ckpt/epoch_00360_20.pt", map_location=device)
+    ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/masked_3dgt_flow_net_mask_adapt_00028_fewshot/step_800.pt", map_location=device)
+    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/masked_3dgt_flow_net_mask_adapt_00015_fewshot/step_850.pt", map_location=device)
+    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/masked_3dgt_flow_net_mask_adapt_00345/epoch_15.pt", map_location=device)
+    # ckpt = torch.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/masked_3dgt_flow_net_mask_adapt_00345/epoch_80.pt", map_location=device)
 
     sd = ckpt["model"]
     sd = OrderedDict((k.replace("module.", ""), v) for k, v in sd.items())
@@ -247,7 +333,7 @@ def run_env(cfg: DictConfig):
     flow_policy.load_state_dict(sd, strict=True)
     flow_policy.eval()
     dists=[]
-    for trial in range(5):
+    for trial in range(1):
         print("===== Trial ", trial, " =====")
     # import pdb;pdb.set_trace()
         env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
@@ -259,21 +345,22 @@ def run_env(cfg: DictConfig):
         os.makedirs(save_dir, exist_ok=True)
         envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
         torch.set_printoptions(precision=5, sci_mode=False)
-        mask_list = []
-        for i in range(12):
-                        # index=envs.success_env_ids[i]
-                        seg = envs.gym.get_camera_image(
-                            envs.sim,
-                            envs.env_ptrs[i],
-                            envs.camera_handles[i]["panda"],
-                            gymapi.IMAGE_SEGMENTATION
-                        ).reshape(envs.cam_props.height, envs.cam_props.width)
-                        mask_list.append(seg)
-        mask = np.stack(mask_list).astype(np.uint8).copy()
+        
         rate = 2
-        # mask = np.rot90(mask, k=2, axes=(1, 2))[:,::rate,::rate].copy()
-        # mask_tensor = torch.from_numpy(mask).cuda()
-        for t in range(250):
+        deviation_list=[]
+        delta_pos_list=[]
+        for t in range(50):
+            mask_list = []
+            for i in range(12):
+                            # index=envs.success_env_ids[i]
+                            seg = envs.gym.get_camera_image(
+                                envs.sim,
+                                envs.env_ptrs[i],
+                                envs.camera_handles[i]["panda"],
+                                gymapi.IMAGE_SEGMENTATION
+                            ).reshape(envs.cam_props.height, envs.cam_props.width)
+                            mask_list.append(seg)
+            mask = np.stack(mask_list).astype(np.uint8).copy()
             print("Timestep: ",t)
             fingertip_centered_pos=envs.fingertip_centered_pos.clone()
             fingertip_centered_quat=envs.fingertip_centered_quat.clone()
@@ -284,15 +371,15 @@ def run_env(cfg: DictConfig):
             ## Process the depth data
             depth = envs.get_wrist_camera_depth()
             camera_rgb = envs.get_wrist_camera_rgb()
-            rotated_depth_list=[]
+            depth_list=[]
             rotated_rgb_list=[]
             for i in range(12):
-                rotated_depth_list.append(np.rot90(depth[i], 2))
-                rotated_rgb_list.append(np.rot90(camera_rgb[i], 2))
-            depth_rot = np.stack(rotated_depth_list)
-            depth_rot = torch.from_numpy(depth_rot).cuda()
-            depth_rot = torch.clamp(depth_rot, min=-0.5, max=0.0)
-            depth_rot = (depth_rot - (-0.1890)) / 0.0795
+                depth_list.append(depth[i])
+                rotated_rgb_list.append(camera_rgb[i])
+            input_depth = np.stack(depth_list)
+            input_depth = torch.from_numpy(input_depth).cuda()
+            input_depth = torch.clamp(input_depth, min=-0.5, max=0.0)
+            input_depth = (input_depth - (-0.1890)) / 0.0795
             tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
             proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")[:,:]).cuda()
             # depth rot 180 degrees
@@ -302,77 +389,28 @@ def run_env(cfg: DictConfig):
             pred_flow_list=[]
             with torch.no_grad():
                 for i in range(12):
-                    pred_flow=flow_policy(torch.from_numpy(np.rot90(mask[i], 2)[::rate, ::rate].copy()).unsqueeze(0).unsqueeze(0).cuda(),depth_rot[i][::rate, ::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
-                    mask_np = (np.rot90(mask[i], 2)[::rate, ::rate] > 0).astype(np.float32)
+                    mask_input = torch.from_numpy(mask)[i,::rate,::rate].cuda()
+                    # pred_flow=flow_policy(torch.from_numpy(np.rot90(mask[i], 2)[::rate, ::rate].copy()).unsqueeze(0).unsqueeze(0).cuda(),depth_rot[i][::rate, ::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
+                    pred_flow=flow_policy(mask_input.unsqueeze(0),input_depth[i][::rate,::rate].unsqueeze(0).unsqueeze(0).cuda())[0].detach().cpu().numpy()
+                    mask_np = (mask[i,::rate,::rate] > 0).astype(np.float32)
                     pred_flow = pred_flow * mask_np
-                    if i != 12:
-                            # rgb = np.rot90(envs.get_wrist_camera_rgb()[i], 2)[::rate, ::rate, :].copy()  # (H, W, 3), uint8 usually
-                            rgb = rotated_rgb_list[i][::rate, ::rate, :].copy()  # (H, W, 3), uint8 usually
-                            vis_flow = pred_flow  # (2, H, W)
-
-                            # ---- flow ----
-                            flow_dir = flow_to_direction(vis_flow)
-
-                            stride = 1
-                            arrow_scale = 4.0
-                            sparse_flow = np.zeros_like(flow_dir)
-                            sparse_flow[:, ::stride, ::stride] = flow_dir[:, ::stride, ::stride]
-                            sparse_flow *= arrow_scale
-
-                            flow_hsv = flow_to_hsv(vis_flow)
-                            flow_vis = draw_arrows(flow_hsv, sparse_flow)
-                            # ---- resize rgb if needed ----
-                            if rgb.shape[:2] != flow_vis.shape[:2]:
-                                rgb = cv2.resize(
-                                    rgb,
-                                    (flow_vis.shape[1], flow_vis.shape[0]),
-                                    interpolation=cv2.INTER_NEAREST
-                                )
-                            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-                            # ---- concat & save ----
-                            vis = np.concatenate([rgb_bgr, flow_vis], axis=1)
-                            # vis = flow_vis
-                            os.makedirs(f"./flow_vis/{i}", exist_ok=True)
-                            out_path = f"./flow_vis/{i}/rgb_flow_{t}.png"
-                            cv2.imwrite(out_path, vis)
-                        # vis_flow = pred_flow                      # (2, H, W)
-                        # depth_small = depth_rot[i][::rate, ::rate].cpu().numpy()  # (H, W)
-
-                        # # ---- depth ----
-                        # depth_vis = depth_to_vis(depth_small)
-
-                        # # ---- flow ----
-                        # flow_dir = flow_to_direction(vis_flow)
-
-                        # stride = 1
-                        # arrow_scale = 4.0
-                        # sparse_flow = np.zeros_like(flow_dir)
-                        # sparse_flow[:, ::stride, ::stride] = flow_dir[:, ::stride, ::stride]
-                        # sparse_flow *= arrow_scale
-
-                        # flow_hsv = flow_to_hsv(vis_flow)
-                        # flow_vis = draw_arrows(flow_hsv, sparse_flow)
-
-                        # # ---- resize depth if needed ----
-                        # if depth_vis.shape[:2] != flow_vis.shape[:2]:
-                        #     depth_vis = cv2.resize(
-                        #         depth_vis,
-                        #         (flow_vis.shape[1], flow_vis.shape[0]),
-                        #         interpolation=cv2.INTER_NEAREST
-                        #     )
-
-                        # # ---- concat & save ----
-                        # vis = np.concatenate([depth_vis, flow_vis], axis=1)
-
-                        # os.makedirs("./flow_vis", exist_ok=True)
-                        # out_path = f"./flow_vis/depth_flow_{t}.png"
-                        # cv2.imwrite(out_path, vis)
+                    z_mean = -0.003496
+                    z_std = 0.003017
+                    pred_flow[2,...] = (pred_flow[2,...]*z_std)+z_mean
                     pred_flow_list.append(pred_flow)
+                    rate = 2
+                    os.makedirs(f"{save_dir}/env_{i}", exist_ok=True)
+                    visualize_flow_and_mask(
+                        pred_flow,
+                        mask[i,::rate,::rate],   
+                        rotated_rgb_list[i],
+                        rate=rate,
+                        prefix=f"{save_dir}/env_{i}/step_{t}"
+                    )
             flow = np.stack(pred_flow_list, axis=0) # (B, 2, H, W)
             # predict actions using predicted flow, and rotated + subsampled depth
             proprioception[...,3:] = 0
-            raw_actions=policy(depth_rot[:, ::rate, ::rate].unsqueeze(dim=1),proprioception[...,2:],actions=None, flow=torch.from_numpy(flow).cuda())
+            raw_actions=policy(input_depth[:, ::rate, ::rate].unsqueeze(dim=1),proprioception[...,2:],actions=None, flow=torch.from_numpy(flow).cuda())
             predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
             next_tgt_pos=envs.fingertip_centered_pos.clone()
             next_tgt_quat=envs.fingertip_centered_quat.clone()
@@ -385,9 +423,8 @@ def run_env(cfg: DictConfig):
                 proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
                 delta_pos=predict_actions[:,i,:3] 
                 # First test with freeze height
-                delta_pos[:,2] = 0
-                delta_pos[:,0] = delta_pos[:,0] / 5
-                delta_pos[:,1] = delta_pos[:,1] / 5
+                # delta_pos[:,2] = 0 if t < 40 else delta_pos[:,2]
+                # delta_pos[:,:2] = 0 if t > 40 else delta_pos[:,:2]
                 delta_rot6d=predict_actions[:,i,3:]
                 curr_rot6d=proprioception[:,3:]
                 next_rot6d=curr_rot6d + delta_rot6d
@@ -401,8 +438,10 @@ def run_env(cfg: DictConfig):
             init_plug_pos_2d[:, 2] = 0
             plug_pos_2d[:, 2] = 0
             # raw delta
+
             deviation = init_plug_pos_2d - plug_pos_2d
-            print("Deviation: ", deviation[5])
+            # print("Deviation: ", deviation[9])
+            deviation_list.append(deviation.cpu().numpy())
             # deviation_norm = torch.norm(deviation, dim=1, keepdim=True) + 1e-8
             # # condition mask: True → use raw action
             # mask_raw = deviation_norm < 0.0001
@@ -410,11 +449,12 @@ def run_env(cfg: DictConfig):
             next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
             next_tgt_pos=next_tgt_pose[:,:3].clone()
             delta_pos = next_tgt_pos - current_gripper_pos   # [num_envs, 3]
-            # delta_pos[:,2]=0
-            print("Action Delta Pose: ",delta_pos[5])
-            # delta_z=delta_pos[:,2].clone()
-            # delta_pos[:,2]=0
-            # delta_z[:] = -0.0008
+            delta_pos_list.append(delta_pos.cpu().numpy())
+            # delta_pos[:,:3] = deviation
+            # delta_pos[:,2] = 0
+            # norms =  torch.norm(delta_pos, dim=1, keepdim=True) +1e-8
+            # delta_pos = delta_pos / (norms) * 0.0005
+            # delta_pos[:,2]=-0.0002
             # delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8  # avoid div by 0
             # target_length = 0.002 * (3 ** 0.5)
             # delta_pos = delta_pos / delta_norm * target_length
@@ -442,6 +482,11 @@ def run_env(cfg: DictConfig):
             #         print("Target Quat: ", next_tgt_quat[inspect_id])
             #         print("Reach Pose: ", envs.fingertip_centered_pos[inspect_id])
             #         print("Reach Quat: ", envs.fingertip_centered_quat[inspect_id])
+        with open("log.txt", "w") as f:
+            for i in range(12):
+                for t in range(50):
+                    f.write(f"Deviation at env {i} time {t}: {deviation_list[t][i]}\n")
+                    f.write(f"Delta Pos at env {i} time {t}: {delta_pos_list[t][i]}\n")
         quat_success = envs.plug_quat[envs.success_env_ids]
         w = quat_success[:, 3]
 
@@ -461,13 +506,12 @@ def run_env(cfg: DictConfig):
                 dist_z.detach().cpu().tolist()
             )
         )
-        # for env_id in range(12):
-        #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+        for env_id in range(12):
+            envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
 
         # print("Final (XY dist, Z dist) for successful vertical plugs:", dist_list)
         dists.extend(dist_list)
-        # os._exit(0)
-        np.save(f"eval_adapt/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
+    np.save(f"eval_result_3dgt_flow_upperbound/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
         #cfg_task.env.desired_subassemblies[0]
     # Visualize
     # envs._save_log_traj()

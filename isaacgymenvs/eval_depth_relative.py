@@ -140,7 +140,8 @@ def run_env(cfg: DictConfig):
     rot_max=torch.from_numpy(delta_rot.max(axis=(0,1))).cuda()
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_multitask_0113/policy_epoch_205.ckpt"  # or policy_last.ckpt
+    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/finetune_diffusion_policy/00345_policy_epoch_100.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/finetune_diffusion_policy/00015_policy_epoch_305.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
@@ -199,6 +200,8 @@ def run_env(cfg: DictConfig):
                 delta_pos=predict_actions[:,i,:3] 
                 # First test with freeze height
                 # delta_pos[:,2] = 0
+                # delta_pos[:, 1] = delta_pos[:, 1] 
+                # delta_pos[:, 0] = delta_pos[:, 0] 
                 delta_rot6d=predict_actions[:,i,3:]
                 curr_rot6d=proprioception[:,3:]
                 next_rot6d=curr_rot6d + delta_rot6d
@@ -264,13 +267,14 @@ def run_env(cfg: DictConfig):
                 dist_z.detach().cpu().tolist()
             )
         )
-        for env_id in range(12):
-            envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
-        # os._exit(0)
         print(dist_list)
+        # for env_id in range(12):
+        #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
+        # os._exit(0)
         # print("Final (XY dist, Z dist) for successful vertical plugs:", dist_list)
         dists.extend(dist_list)
-        np.save(f"eval_result_baseline_diffusion_policy/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
+        np.save(f"eval_dp_finetune/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
+        # np.save(f"eval_result_baseline_diffusion_policy/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
     
     os._exit(0)
 
