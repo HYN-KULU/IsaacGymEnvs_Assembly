@@ -1,0 +1,44 @@
+import os
+import numpy as np
+
+ROOT_DIR = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_diffusion_policy"
+OUT_INDEX = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_diffusion_policy/flow_diffusion_policy_adapt_index_00028.npy"
+
+index = []
+task_num=0
+# iterate over task directories
+for d in sorted(os.listdir(ROOT_DIR)):
+    if not d.startswith("asset_"):
+        continue
+    task_num += 1
+    # if task_num > 6:
+    #     break
+    task_id = int(d.replace("asset_", ""))   # store as int
+    print(task_id)
+    if task_id != 28:
+        continue
+    task_dir = os.path.join(ROOT_DIR, d)
+
+    for fname in sorted(os.listdir(task_dir)):
+        if not fname.startswith("depth_flow_") or not fname.endswith(".npz"):
+            continue
+
+        depth_flow_id = int(
+            fname.replace("depth_flow_", "").replace(".npz", "")
+        )
+        # if len(index) > 1000:
+        #     break
+        # store only integers, not strings
+        index.append((task_id, depth_flow_id))
+
+print(f"[INFO] Collected {len(index)} samples")
+
+# convert to numpy array
+index = np.asarray(index, dtype=np.int32)
+
+os.makedirs(os.path.dirname(OUT_INDEX), exist_ok=True)
+np.save(OUT_INDEX, index)
+
+print(f"[OK] Saved index → {OUT_INDEX}")
+print("Index shape:", index.shape)
+print("First entry:", index[0])

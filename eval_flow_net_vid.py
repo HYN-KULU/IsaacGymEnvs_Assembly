@@ -54,7 +54,7 @@ def draw_arrows(img, flow, stride=6, scale=5):
             y2 = int(y + dy * scale)
 
             cv2.arrowedLine(out, (x, y), (x2, y2),
-                            color=(0, 255, 0),
+                            color=(255, 0, 0),
                             thickness=1,
                             tipLength=0.3)
     return out
@@ -182,12 +182,108 @@ def save_mask_image(mask, out_path, scale=3):
     cv2.imwrite(out_path, mask_img)
     print(f"[✓] Saved mask image → {out_path}")
 
+# def render_traj_video(rgb_rev, flows_gt, flows_pred, mask, out_path):
+#     """
+#     rgb_rev:    (160, H, W, 3) uint8  – rotated + reversed RGB frames
+#     flows_gt:   list of 160 items, each (2,H,W)
+#     flows_pred: list of 160 items, each (2,H,W)
+#     mask:       unused (kept for interface compatibility)
+#     out_path:   output mp4 path
+#     """
+
+#     import cv2
+#     import numpy as np
+#     import imageio
+
+#     frames = []
+
+#     # =========================
+#     # visualization parameters
+#     # =========================
+#     scale = 3            # upsample factor (clarity)
+#     stride = 12          # arrow sparsity
+#     arrow_scale = 4.0    # arrow length scaling
+
+#     for t in range(len(flows_pred)):
+#         # ---------------------
+#         # RGB
+#         # ---------------------
+#         rgb = rgb_rev[t]  # (H, W, 3)
+#         rgb = cv2.resize(
+#             rgb, None, fx=scale, fy=scale,
+#             interpolation=cv2.INTER_LINEAR
+#         )
+
+#         # =====================
+#         # GT FLOW
+#         # =====================
+#         flow_gt = flows_gt[t]                  # (2, H, W)
+#         flow_gt_dir = flow_to_direction(flow_gt)
+
+#         flow_gt_dir = cv2.resize(
+#             flow_gt_dir.transpose(1, 2, 0),
+#             None, fx=scale, fy=scale,
+#             interpolation=cv2.INTER_LINEAR
+#         ).transpose(2, 0, 1)
+
+#         sparse_gt = np.zeros_like(flow_gt_dir)
+#         sparse_gt[:, ::stride, ::stride] = flow_gt_dir[:, ::stride, ::stride]
+#         sparse_gt *= arrow_scale
+
+#         gt_hsv = flow_to_hsv(flow_gt)
+#         gt_hsv = cv2.resize(
+#             gt_hsv, None, fx=scale, fy=scale,
+#             interpolation=cv2.INTER_LINEAR
+#         )
+
+#         gt_arrow = draw_arrows(gt_hsv, sparse_gt)
+
+#         # =====================
+#         # PREDICTED FLOW
+#         # =====================
+#         flow_pd = flows_pred[t]                # (2, H, W)
+#         flow_pd_dir = flow_to_direction(flow_pd)
+
+#         flow_pd_dir = cv2.resize(
+#             flow_pd_dir.transpose(1, 2, 0),
+#             None, fx=scale, fy=scale,
+#             interpolation=cv2.INTER_LINEAR
+#         ).transpose(2, 0, 1)
+
+#         sparse_pd = np.zeros_like(flow_pd_dir)
+#         sparse_pd[:, ::stride, ::stride] = flow_pd_dir[:, ::stride, ::stride]
+#         sparse_pd *= arrow_scale
+
+#         pd_hsv = flow_to_hsv(flow_pd)
+#         pd_hsv = cv2.resize(
+#             pd_hsv, None, fx=scale, fy=scale,
+#             interpolation=cv2.INTER_LINEAR
+#         )
+
+#         pd_arrow = draw_arrows(pd_hsv, sparse_pd)
+
+#         # =====================
+#         # COMBINE: GT | RGB | PRED
+#         # =====================
+#         frame = np.concatenate([rgb, pd_arrow], axis=1)
+#         # frame = np.concatenate([gt_arrow, rgb, pd_arrow], axis=1)
+#         frames.append(frame)
+
+#     # ---- save video (high quality) ----
+#     imageio.mimsave(
+#         out_path,
+#         frames,
+#         fps=20,
+#         codec="libx264",
+#         bitrate="20M"
+#     )
+#     print(f"[✓] Saved video → {out_path}")
 def render_traj_video(rgb_rev, flows_gt, flows_pred, mask, out_path):
     """
-    rgb_rev:    (160, H, W, 3) uint8  – rotated + reversed RGB frames
-    flows_gt:   list of 160 items, each (2,H,W)
-    flows_pred: list of 160 items, each (2,H,W)
-    mask:       unused (kept for interface compatibility)
+    rgb_rev:    (T, H, W, 3) uint8
+    flows_gt:   unused
+    flows_pred: list of (2, H, W)
+    mask:       (1, H, W) or (H, W)
     out_path:   output mp4 path
     """
 
@@ -200,75 +296,64 @@ def render_traj_video(rgb_rev, flows_gt, flows_pred, mask, out_path):
     # =========================
     # visualization parameters
     # =========================
-    scale = 3            # upsample factor (clarity)
-    stride = 12          # arrow sparsity
-    arrow_scale = 4.0    # arrow length scaling
+    scale = 3
+    stride = 12
+    arrow_scale = 4.0
 
-    for t in range(120):
-        # ---------------------
-        # RGB
-        # ---------------------
-        rgb = rgb_rev[t]  # (H, W, 3)
+    # -------------------------
+    # prepare mask
+    # -------------------------
+    if hasattr(mask, "detach"):
+        mask = mask.detach().cpu().numpy()
+    # mask_2d = mask[0,0]       # (H, W)
+    H, W = mask.shape
+
+    for t in range(len(flows_pred)):
+        # =====================
+        # LEFT: RGB
+        # =====================
+        rgb = rgb_rev[t]
         rgb = cv2.resize(
             rgb, None, fx=scale, fy=scale,
             interpolation=cv2.INTER_LINEAR
         )
 
         # =====================
-        # GT FLOW
+        # RIGHT: mask background
         # =====================
-        flow_gt = flows_gt[t]                  # (2, H, W)
-        flow_gt_dir = flow_to_direction(flow_gt)
+        bg = np.zeros((H, W, 3), dtype=np.uint8)
+        bg[mask > 0] = 255   # white inside mask
 
-        flow_gt_dir = cv2.resize(
-            flow_gt_dir.transpose(1, 2, 0),
+        bg = cv2.resize(
+            bg, None, fx=scale, fy=scale,
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        # =====================
+        # FLOW (PRED) — use YOUR template
+        # =====================
+        flow = flows_pred[t]                    # (2, H, W)
+        flow_dir = flow_to_direction(flow)
+
+        flow_dir = cv2.resize(
+            flow_dir.transpose(1, 2, 0),
             None, fx=scale, fy=scale,
             interpolation=cv2.INTER_LINEAR
         ).transpose(2, 0, 1)
 
-        sparse_gt = np.zeros_like(flow_gt_dir)
-        sparse_gt[:, ::stride, ::stride] = flow_gt_dir[:, ::stride, ::stride]
-        sparse_gt *= arrow_scale
+        sparse = np.zeros_like(flow_dir)
+        sparse[:, ::stride, ::stride] = flow_dir[:, ::stride, ::stride]
+        sparse *= arrow_scale
 
-        gt_hsv = flow_to_hsv(flow_gt)
-        gt_hsv = cv2.resize(
-            gt_hsv, None, fx=scale, fy=scale,
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        gt_arrow = draw_arrows(gt_hsv, sparse_gt)
+        flow_arrow = draw_arrows(bg, sparse)
 
         # =====================
-        # PREDICTED FLOW
+        # COMBINE
         # =====================
-        flow_pd = flows_pred[t]                # (2, H, W)
-        flow_pd_dir = flow_to_direction(flow_pd)
-
-        flow_pd_dir = cv2.resize(
-            flow_pd_dir.transpose(1, 2, 0),
-            None, fx=scale, fy=scale,
-            interpolation=cv2.INTER_LINEAR
-        ).transpose(2, 0, 1)
-
-        sparse_pd = np.zeros_like(flow_pd_dir)
-        sparse_pd[:, ::stride, ::stride] = flow_pd_dir[:, ::stride, ::stride]
-        sparse_pd *= arrow_scale
-
-        pd_hsv = flow_to_hsv(flow_pd)
-        pd_hsv = cv2.resize(
-            pd_hsv, None, fx=scale, fy=scale,
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        pd_arrow = draw_arrows(pd_hsv, sparse_pd)
-
-        # =====================
-        # COMBINE: GT | RGB | PRED
-        # =====================
-        frame = np.concatenate([gt_arrow, rgb, pd_arrow], axis=1)
+        frame = np.concatenate([rgb, flow_arrow], axis=1)
         frames.append(frame)
 
-    # ---- save video (high quality) ----
+    # ---- save video ----
     imageio.mimsave(
         out_path,
         frames,
@@ -592,6 +677,29 @@ def evaluate_directional_success(
         "frames": T,
     }
 
+def shift_np_integer(x, dx, dy):
+    """
+    x: (C,H,W)
+    dx, dy: integers
+    """
+    dx = int(round(dx))
+    dy = int(round(dy))
+
+    y = np.roll(x, shift=(dy, dx), axis=(1, 2))
+
+    # zero out wrapped region (important!)
+    if dy > 0:
+        y[:, :dy, :] = 0
+    elif dy < 0:
+        y[:, dy:, :] = 0
+
+    if dx > 0:
+        y[:, :, :dx] = 0
+    elif dx < 0:
+        y[:, :, dx:] = 0
+
+    return y
+
 # ------------------------------------------------------
 # MAIN: Predict entire trajectory & save video
 # ------------------------------------------------------
@@ -624,22 +732,23 @@ def main():
     # ============================================================
     # train_tasks=['00004', '00016', '00021', '00030', '00042', '00074', '00077', '00078', '00110', '00117', '00133', '00138', '00141', '00163', '00175', '00186', '00187', '00192', '00211', '00213', '00255', '00256', '00271', '00293', '00296', '00301', '00318', '00319', '00320', '00329', '00345', '00346', '00388', '00410', '00417', '00422', '00426', '00437', '00444', '00446', '00471', '00480', '00499', '00514', '00537', '00559', '00581', '00614', '00615', '00638', '00649', '00659', '00681', '00686', '00700', '00703', '00726', '00768', '00783', '00855', '00860', '01026', '01029', '01036', '01041', '01079', '01092', '01102', '01129', '01132', '01136']
     log_result={}
-    train_tasks = ["00681"]
+    train_tasks = ["00028"]
     for task in train_tasks:
         print(f"[Eval] Processing task {task} ...")
         args.task_id = task
         results=[]
-        for traj_id in range(3):
+        for traj_id in range(1):
             # traj_id = 2
-            hdf_id = 5
+            hdf_id = 2
+            traj_id = 2
             vis=True
             if vis:
-                data = read_from_hdf5(
-                    f"/tmp/flow_1206/asset_{args.task_id}/disassembly_traj_{hdf_id}.h5"
-                )
                 # data = read_from_hdf5(
-                #     f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_1206/asset_{args.task_id}/disassembly_traj_{hdf_id}.h5"
+                    # f"/tmp/flow_1206/asset_{args.task_id}/disassembly_traj_{hdf_id}.h5"
                 # )
+                data = read_from_hdf5(
+                     f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_1206/asset_{args.task_id}/disassembly_traj_{hdf_id}.h5"
+                )
                 # data: (160, 12, 480, 640, 3)
                 # processing mask
                 mask = data["mask"][traj_id, ...]                  # (160,480,640)
@@ -682,9 +791,23 @@ def main():
                 np.rot90(data["mask"], 2, axes=(1, 2)).copy()  # rotate 180° on H,W
             ).cuda().unsqueeze(0).unsqueeze(0)
             mask=masks[:,:,traj_id,:,:][:,:,::rate,::rate]
-            rendered_mask=np.rot90(data["mask"][traj_id],2).copy()[::rate,::rate]
             # for t, idx in enumerate(range(start_idx, end_idx)):
-            for t in range(120):
+            mask_np = mask[0].detach().cpu().numpy()
+            mask_2d = mask_np[0]
+            H,W = mask_2d.shape
+            ys, xs = np.where(mask_2d > 0)
+            cy = ys.mean()
+            cx = xs.mean()
+            target_y = H / 2.0
+            target_x = W / 2.0
+            dy = target_y - cy
+            dx = target_x - cx
+            mask_shifted_np = shift_np_integer(mask_np, dx, dy)
+            mask = torch.from_numpy(mask_shifted_np).unsqueeze(0).to(device)
+            # rendered_mask=np.rot90(data["mask"][traj_id],2).copy()[::rate,::rate]
+            rendered_mask = np.rot90(mask_shifted_np[0],2).copy()
+
+            for t in range(100):
                 # sample = dataset[idx]
                 # import pdb;pdb.set_trace()
                 # mask = sample["mask"].unsqueeze(0).to(device)      # (1,1,H,W)
@@ -695,7 +818,7 @@ def main():
 
                 if masks is None:
                     masks = mask      # store mask for entire traj
-
+                
                 # model prediction
                 with torch.no_grad():
                     pred_flow = policy(mask, depth)[0].cpu().numpy()
@@ -716,12 +839,12 @@ def main():
                 flows_pred_list.append(pred_flow_masked)
 
                 # print(f"Frame {t:03d} / 119 processed")
-            result=evaluate_directional_success_v3(
-                score_gt_x_list,
-                score_gt_y_list,
-                score_pred_x_list,
-                score_pred_y_list,
-            )
+            # result=evaluate_directional_success_v3(
+            #     score_gt_x_list,
+            #     score_gt_y_list,
+            #     score_pred_x_list,
+            #     score_pred_y_list,
+            # )
             # import pdb;pdb;pdb.set_trace()
             # ============================================================
             # 5. Render video (GT | RGB | Pred)
@@ -734,17 +857,17 @@ def main():
                 print("[Eval] Rendering video ...")
                 rate = 2
                 render_traj_video(
-                    rgb_rev=rgb_rev[:, ::rate, ::rate],
+                    rgb_rev=rgb_rev[:100, ::rate, ::rate],
                     flows_gt=flows_gt_list,
                     flows_pred=flows_pred_list,
-                    # mask=rendered_mask,
-                    mask=None,
+                    mask=rendered_mask,
+                    # mask=mask,
                     out_path=out_path
                 )
 
                 print(f"[✓] Saved final trajectory video to: {out_path}")
-            print(result)
-            results.append(result)
+            # print(result)
+            # results.append(result)
         log_result[task] = results
         import json 
         with open(f"eval_vis/results_update_metric.json", "w") as f:
