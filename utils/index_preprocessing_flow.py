@@ -2,7 +2,7 @@ import os
 import numpy as np
 
 ROOT_DIR = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_net"
-OUT_INDEX = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_diffusion_policy_adapt_index_00015_flow.npy"
+OUT_INDEX = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_diffusion_policy_adapt_index_00648_flow.npy"
 
 index = []
 task_num=0
