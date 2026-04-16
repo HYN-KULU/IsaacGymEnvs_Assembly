@@ -13,6 +13,7 @@ from policy.diffusion_policy import Diffusion_Policy
 from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 import cv2
 import random
+from quat_helper import *
 def load_processed_dataset(filename):
     import h5py
     data = {}
@@ -168,6 +169,8 @@ TRAIN_TASKS = {
     "01129", "01132", "01136"
 }
 
+from quat_utils import *
+from diffusion_utils.transformation import rot_trans_mat, apply_mat_to_pose, apply_mat_to_pcd, xyz_rot_transform
 @hydra.main(version_base="1.1", config_name="config", config_path="./cfg")
 def run_env(cfg: DictConfig):
     device="cuda"
@@ -197,69 +200,192 @@ def run_env(cfg: DictConfig):
         cfg,
     )
    
-
+    num_envs = 12
     # import pdb;pdb.set_trace()
-    env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
+    env_ids=torch.tensor(range(num_envs), device='cuda:0')
     envs.reset_idx(env_ids)
-    init_plug_pos = envs.plug_pos.clone()
-    envs.disassemble_plug_from_socket_eval_init()
-    save_dir = "eval_visual"
-    os.makedirs(save_dir, exist_ok=True)
-    # envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
-    torch.set_printoptions(precision=5, sci_mode=False)
-    image_list=[[] for _ in range(12)]
-    offset = torch.zeros(12, 3)
-    # -0.01 ~ 0.01 for task 00042
-    offset[:, :2] = (torch.rand(12, 2) * 0.02) - 0.01 
-    
-    nums = random.sample(range(200), 50)
-    action_list=[]
-    depth_list=[]
-    for i in range(150):
-    # for i in range(200):
-        print(f"Step {i}")
-        # log_step=False
-        delta_pos = init_plug_pos - envs.plug_pos
-        if i < 100:
-            delta_pos = delta_pos + offset.cuda() / 3
-            log_step = False
-        else:
-            log_step = True
-        # delta_pos = envs.socket_pos - envs.plug_pos 
-        delta_xy = delta_pos[:, :2]
-        action = compute_insert_action(delta_pos)
-        # action[:] = 0
-        envs.gym.fetch_results(envs.sim, True)
-        envs.gym.sync_frame_time(envs.sim)
-        envs.refresh_base_tensors()
-        envs.refresh_env_tensors()
-        next_tgt_pos=envs.fingertip_centered_pos.clone() + action
-        next_tgt_quat=envs.fingertip_centered_quat.clone()
-        action_list.append(action.detach().cpu().numpy())
-        envs._move_gripper_to_eef_pose(env_ids, 
-                                        ctrl_tgt_pos=next_tgt_pos, 
-                                        ctrl_tgt_quat=next_tgt_quat, 
-                                        sim_steps=10, 
-                                        if_log=log_step, 
-                                        close_gripper=True,
-                                        log_freq=10,
-                                        log_extra=False,
-                                        log_first_only=True
-                                        )
-    envs._log_robot_state(envs.success_env_ids)
-    envs._log_object_state(envs.success_env_ids)
+    for run_seed in range(6):
+        envs.run_id = run_seed
+        envs.visualize_rgb = True
+        envs.reset_idx(env_ids)
+        init_plug_pos = envs.init_root_pose[:, :3].clone()
+        init_plug_quat = envs.init_root_pose[:, 3:7].clone()
+        envs.disassemble_plug_from_socket_eval_init()
+        save_dir = "eval_visual"
+        os.makedirs(save_dir, exist_ok=True)
+        # envs.visualize_top_camera(0, f"eval_visual/visualize_eval_top_camera.png")
+        torch.set_printoptions(precision=5, sci_mode=False)
+        image_list=[[] for _ in range(num_envs)]
+        offset = torch.zeros(num_envs, 3)
+        # -0.01 ~ 0.01 for task 00042
+        # 1. Define the shape
+        shape = (num_envs, 2)
 
-    # Success Checker
-    
-    action_array=np.stack(action_list)
-    zeros = np.zeros((action_array.shape[0], action_array.shape[1], 6))
-    action_array_padded = np.concatenate([action_array, zeros], axis=-1)
-    print(envs.success_env_ids)
-    # envs.success_env_ids=np.intersect1d(envs.success_env_ids, valid_idx.cpu().numpy())
-    if cfg.seed == 0:
-        for env_id in range(12):
-            envs.save_first_env_images(out_dir=f"rollout/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
-    # envs._save_log_traj(action_array_padded)  
+        # 2. Generate magnitudes in range [0.003, 0.005]
+        magnitudes = (torch.rand(shape) * 0.002) + 0.003
+
+        # 3. Create a random sign mask (-1 or 1)
+        signs = torch.where(torch.rand(shape) > 0.5, 1.0, -1.0)
+        target_plug_quat = init_plug_quat.clone()
+        # 4. Apply to your offset
+        offset[:, :2] = magnitudes * signs
+        target_plug_quat_disturbed, yaw_deg = disturb_quat_in_yaw(
+            target_plug_quat,
+            deg_min=5.0,
+            deg_max=20.0,
+            both_directions=True,
+            world_frame=True,
+        )
+        nums = random.sample(range(200), 50)
+        action_list=[]
+        depth_list=[]
+        if run_seed in [0,1]:
+            recovery = False
+        else:
+            recovery = True
+        if recovery:
+            disturb_steps = 200
+            steps = 350
+        else:
+            steps = 250
+        ###
+        steps = 30
+        force_traj = None
+        recovery_steps_after_spike = 10
+        recovery_counter = np.zeros(num_envs, dtype=np.int32)
+        for i in range(steps):
+        # for i in range(200):
+            print(f"Step {i}")
+            # log_step=False
+            delta_pos = init_plug_pos - envs.plug_pos
+            target_plug_quat = init_plug_quat
+            if recovery:
+                if i < disturb_steps:
+                    delta_pos = delta_pos + offset.cuda()
+                    delta_pos[:,2] = random.uniform(-0.0002,-0.0001)
+                    target_plug_quat = target_plug_quat_disturbed
+                    log_step = False
+                else:
+                    log_step = True
+            else:
+                log_step = True
+            # if i > 100:
+                # delta_pos[:,2] = -0.001 * (i-100)
+            ############################################################################################################# For debugging
+            # delta_pos = envs.socket_pos - envs.plug_pos
+            # print("envs.socket_pos: ", envs.socket_pos)
+            # print("envs.plug_pos: ", envs.plug_pos)
+            # print("delta_pos: ", delta_pos)
+            delta_xy = delta_pos[:, :2]
+            action = compute_insert_action(delta_pos)
+            # action[:] = 0
+            envs.gym.fetch_results(envs.sim, True)
+            envs.gym.sync_frame_time(envs.sim)
+            envs.refresh_base_tensors()
+            envs.refresh_env_tensors()
+            next_tgt_quat=envs.fingertip_centered_quat.clone()
+            previous_tgt_quat = next_tgt_quat.clone()
+            previous_tgt_pos = envs.fingertip_centered_pos.clone()
+            log_step = True
+            if i > 1:
+                delta = force_traj[-1] - force_traj[0]
+                vals = delta[:, 0, 2]
+                idx = np.where(vals > 0.05)[0]
+                if len(idx) > 0:
+                    recovery_counter[idx] = recovery_steps_after_spike
+            recovering_idx = np.where(recovery_counter > 0)[0]
+            recovery_counter[recovering_idx] -= 1
+            vals = torch.tensor([0.0, 1e-4, 2e-4], device=action.device)
+            rand_idx = torch.randint(0, 3, (len(recovering_idx),), device=action.device)
+            action[recovering_idx, 2] = vals[rand_idx]
+            next_tgt_pos= previous_tgt_pos + action
+            if i > 50:
+                q_step, angle_err = quat_step_toward(
+                    current_q=envs.plug_quat,
+                    target_q=target_plug_quat,
+                    max_angle_step_deg=0.3,
+                )
+
+                # print("quat_angle_err_deg:", torch.rad2deg(angle_err))
+
+                next_tgt_quat = quat_mul(q_step, envs.fingertip_centered_quat.clone())
+                next_tgt_quat = quat_normalize(next_tgt_quat)
+            
+            if log_step:
+                # previous / next target pos, quat
+                prev_pos_np = previous_tgt_pos.detach().cpu().numpy()[:, None, :]   # [N, 1, 3]
+                prev_quat_np = previous_tgt_quat.detach().cpu().numpy()[:, None, :] # [N, 1, 4]
+
+                next_pos_np = next_tgt_pos.detach().cpu().numpy()[:, None, :]       # [N, 1, 3]
+                next_quat_np = next_tgt_quat.detach().cpu().numpy()[:, None, :]     # [N, 1, 4]
+
+                # build tcp = [x, y, z, qx, qy, qz, qw]
+                prev_tcp = np.concatenate([prev_pos_np, prev_quat_np], axis=2)      # [N, 1, 7]
+                next_tcp = np.concatenate([next_pos_np, next_quat_np], axis=2)      # [N, 1, 7]
+
+                # convert quaternion -> rotation_6d
+                prev_tcp_rotation_6d = xyz_rot_transform(
+                    prev_tcp,
+                    from_rep="quaternion",
+                    to_rep="rotation_6d"
+                )  # expected [N, 1, 9] = [xyz + rot6d]
+
+                next_tcp_rotation_6d = xyz_rot_transform(
+                    next_tcp,
+                    from_rep="quaternion",
+                    to_rep="rotation_6d"
+                )  # expected [N, 1, 9]
+
+                # only take the rotation_6d part, not xyz
+                prev_rot6d = prev_tcp_rotation_6d[:, 0, 3:]   # [N, 6]
+                next_rot6d = next_tcp_rotation_6d[:, 0, 3:]   # [N, 6]
+
+                action_rot6d = next_rot6d - prev_rot6d        # [N, 6]
+
+                # action is delta_pos, shape [N, 3]
+                action_9d = torch.cat([
+                    action,
+                    torch.from_numpy(action_rot6d).to(action.device, dtype=action.dtype)
+                ], dim=-1)                                    # [N, 9]
+
+                action_list.append(action_9d.detach().cpu().numpy())
+            envs._move_gripper_to_eef_pose(env_ids, 
+                                            ctrl_tgt_pos=next_tgt_pos, 
+                                            ctrl_tgt_quat=next_tgt_quat, 
+                                            sim_steps=10, 
+                                            if_log=log_step, 
+                                            close_gripper=True,
+                                            log_freq=10,
+                                            log_extra=False,
+                                            log_first_only=True
+                                            )
+            # print(envs.vec_sensor_tensor.shape,envs.vec_sensor_tensor[0])
+            force_np = envs.vec_sensor_tensor.view(-1, 3, 6).detach().cpu().numpy()
+            if force_traj is None:
+                # 第一次初始化
+                force_traj = force_np[None]   # shape: (1, N, 3, 6)
+            else:
+                # 在时间维度拼接
+                force_traj = np.concatenate([force_traj, force_np[None]], axis=0)
+        envs.success_env_ids = torch.arange(0, num_envs, device=envs.device)
+        envs._log_robot_state(envs.success_env_ids)
+        envs._log_object_state(envs.success_env_ids)
+        # force_array = torch.stack(force_traj,dim=0).detach().cpu().numpy()
+        force_array = force_traj
+        # Success Checker
+        action_array=np.stack(action_list)
+        # if run_seed in [0,3]:
+        if True:
+            folder = "rollout_orient"
+            for env_id in range(6):
+                    folder= "rollout_orient"
+                    if recovery:
+                        folder = "rollout_recovery"
+                    envs.save_first_env_images(out_dir=f"{folder}/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
+        success_env_ids_np = envs.success_env_ids.detach().cpu().numpy().astype(np.int64)
+        # envs._save_log_traj(action_array[:,success_env_ids_np,:], force_array[:,success_env_ids_np,:,:])  
+
+
     os._exit(0)
 
 

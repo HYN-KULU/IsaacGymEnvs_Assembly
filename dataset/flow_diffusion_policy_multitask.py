@@ -2,9 +2,10 @@ import torch
 from torch.utils.data import Dataset
 import h5py
 import numpy as np
+from torch.utils.data import DataLoader
 
 class DepthActionDataset(Dataset):
-    def __init__(self, hdf5_file, transform=None, normalize=True, scale_to_unit=True, hdf5_file_action_normalize="/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/preprocess/processed_dataset_forward_0320.h5"):
+    def __init__(self, hdf5_file, transform=None, normalize=True, scale_to_unit=True, hdf5_file_action_normalize="/home/ubuntu/automate/flow_diffusion_policy_multitask_0206.h5", index_path=""):
         """
         Args:
             hdf5_file (str): Path to processed_dataset.h5
@@ -23,15 +24,7 @@ class DepthActionDataset(Dataset):
         self.actions_normalize = self.h5_action_normalize["actions"]
 
         self.length = self.actions_normalize.shape[0]
-        self.index = np.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy/diffusion_policy_index.npy", mmap_mode = "r").copy()
-        # self.data=[]
-        self.data = np.empty((len(self.index), 180, 240), dtype=np.float16)
-        count=0
-        for (task_id, depth_id) in self.index:
-            self.data[count] = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_multitask_0322/asset_{task_id:05d}/depth_{depth_id}.npz",allow_pickle=False)["depth"].astype(np.float16)
-            count+=1
-            if count%1000==0:
-                print(f"Loaded {count}/{len(self.index)} depth maps into memory")
+        self.index = np.load(index_path, mmap_mode = "r").copy()
         if self.normalize:
             # compute min/max for delta_pos only (first 3 dims)
             all_actions = self.actions_normalize[()]  # (N, K, 9)
@@ -47,37 +40,25 @@ class DepthActionDataset(Dataset):
         self.h5_action = h5py.File(self.hdf5_file_action, "r")
         self.actions = self.h5_action["actions"]
         self.proprio = self.h5_action["proprioception"]
-        print("Finish Loading Dataset")
-        
 
     def __len__(self):
-        # return len(self.index) 
-        return 1393
+        return len(self.index)
 
     def __getitem__(self, idx):
-        # depth (H, W) -> (1, H, W) 
-        # task_id, depth_id = self.index[idx]
-        # data = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy/asset_{task_id:05d}/depth_{depth_id}.npz",allow_pickle=False)
-        # depth = data["depth"].copy()
-        depth = self.data[idx]
-        depth = depth.astype(np.float32)
+        task_id, depth_flow_id = self.index[idx]
+        data = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/flow_diffusion_policy/asset_{task_id:05d}/depth_flow_{depth_flow_id}.npz", allow_pickle=False)
+        flow = data["flow"].copy()
+        depth = data["depth"].copy()
         depth = np.expand_dims(depth, axis=0)
         depth = torch.from_numpy(depth)
-        # min: -0.5
-        # max: -0.0538
-        # mean: -0.1890
-        # std: 0.0795
-        # if self.transform:
-        #     depth = self.transform(depth)
         depth = torch.clamp(depth, min=-0.5, max=0.0)
         depth = (depth - (-0.1890)) / 0.0795
-        # proprio (9,)
+        flow  = torch.from_numpy(flow)             # (2,480,640)
         proprio = self.proprio[idx].astype(np.float32)
         proprio = torch.from_numpy(proprio)[...,2:]
 
         # actions (K, 9)
         actions = self.actions[idx].astype(np.float32)
-
         if self.normalize:
             delta_pos = actions[..., 0:3]
             delta_rot6d = actions[..., 3:]
@@ -94,9 +75,9 @@ class DepthActionDataset(Dataset):
             actions = np.concatenate([norm_delta, norm_delta_rot], axis=-1)
 
         actions = torch.from_numpy(actions)
-
         return {
             "depth": depth,
+            "flow": flow,
             "proprioception": proprio,
             "actions": actions
         }

@@ -61,7 +61,7 @@ import plotly.graph_objects as go
 from scipy.spatial.transform import Rotation as R
 import torch.nn.functional as F
 from gripper_utils import *
-VISUALIZE_RGB=False
+VISUALIZE_RGB=True
 LOG_VISUAL=False
 def quat_to_matrix(q):
     """Convert Isaac Gym gymapi.Quat to 3x3 rotation matrix"""
@@ -230,6 +230,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
     ):
         """Initialize instance variables. Initialize task superclass."""
         self.cfg = cfg
+        
+        self.run_id = 0
+        self.visualize_rgb = True
         self._get_task_yaml_params()
         print("Calling This in Automate Disassembly ***************************************")
         super().__init__(
@@ -244,7 +247,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # load plug grasp poses and disassembly distances 
         self.plug_grasps, self.disassembly_dists = self._load_assembly_info()
-
+        self.random_gripper_orient = True
         # initialized logging variables for disassembly paths
         self._init_log_data_per_assembly()
         self.init_plug_pos=None
@@ -253,6 +256,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         if self.viewer != None:
             self._set_viewer_params()
+        
+        # Init Force sensing
+        _raw_sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
+        self.vec_sensor_tensor = gymtorch.wrap_tensor(_raw_sensor_tensor)
 
     def _get_task_yaml_params(self):
         """Initialize instance variables from YAML files."""
@@ -291,166 +298,14 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         return fx, fy, cx, cy
         
-    def iga_demo(self):
-
-        import imageio, os
-        from isaacgym import gymtorch
-        import random
-        import numpy as np
-
-        save_dir = "iga_eval_visual"
-        os.makedirs(save_dir, exist_ok=True)
-
-        env_id = 0  # visualize env 0
-        plug_sim_id = int(self.plug_actor_ids_sim[env_id])
-
-        # ------------------------------------------------------------
-        # 1. Start from final aligned height
-        # ------------------------------------------------------------
-        FINAL_HEIGHT = 0.018
-        self.root_pos[env_id, self.plug_actor_id_env, 2] += FINAL_HEIGHT
-        self.root_pos[env_id, self.plug_actor_id_env, 1] += 0.0034
-        self.root_pos[env_id, self.plug_actor_id_env, 0] += -0.0023
-        self.root_pos[env_id, self.plug_actor_id_env, 3:] += 0.0002
-
-        idx = torch.tensor([plug_sim_id], dtype=torch.int32, device=self.device)
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self.root_state),
-            gymtorch.unwrap_tensor(idx),
-            1
-        )
-
-        self.gym.simulate(self.sim)
-        self.gym.fetch_results(self.sim, True)
-        self.gym.step_graphics(self.sim)
-        self.gym.render_all_camera_sensors(self.sim)
-
-        # ============================================================
-        #   PART 1 — NOISY RANDOM TRANSLATION (always roughly upward)
-        # ============================================================
-
-        translate_steps = 20
-        image_id=0
-        # step sim
-        self.gym.simulate(self.sim)
-        self.gym.fetch_results(self.sim, True)
-        self.gym.step_graphics(self.sim)
-        self.gym.render_all_camera_sensors(self.sim)
-        # save image
-        rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
-        imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
-        image_id+=1
-        base_dy = random.uniform(-0.0035, 0.0035)   
-        base_dx = random.uniform(-0.0035, 0.0035)   
-        base_dz = random.uniform(0, 0.004)   
-        for t in range(translate_steps):
-
-            # Base upward movement
-                # general upward direction (Y axis)
-            
-            # Noise in XY and Z
-            noise_dx = (random.random() - 0.5) * 0.0008     # [-0.0004, 0.0004]
-            noise_dy = (random.random() - 0.5) * 0.0004     # [-0.0002, 0.0002]
-            noise_dz = (random.random() - 0.5) * 0.0006     # [-0.0003, 0.0003]
-
-            # Non-uniform scale factor
-            step_scale = random.uniform(0.4, 1.6)
-
-            # Final noisy translation
-            dx = step_scale * (base_dx+ noise_dx)
-            dy = step_scale * (base_dy + noise_dy)
-            dz = step_scale * (base_dz + noise_dz)
-
-            # apply translation
-            self.root_pos[env_id, self.plug_actor_id_env, 0] += dx
-            self.root_pos[env_id, self.plug_actor_id_env, 1] += dy
-            self.root_pos[env_id, self.plug_actor_id_env, 2] += dz
-
-            # sync to sim
-            self.gym.set_actor_root_state_tensor_indexed(
-                self.sim,
-                gymtorch.unwrap_tensor(self.root_state),
-                gymtorch.unwrap_tensor(idx),
-                1
-            )
-
-            # step sim
-            self.gym.simulate(self.sim)
-            self.gym.fetch_results(self.sim, True)
-            self.gym.step_graphics(self.sim)
-            self.gym.render_all_camera_sensors(self.sim)
-
-            # save image
-            rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
-            imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
-            image_id+=1
-            print(f"Saved translate_{t:03d}.png")
-
-        # ============================================================
-        #   PART 2 — NOISY RANDOM ROTATION
-        # ============================================================
-
-        rotate_steps = 20
-        q = self.root_quat[env_id, self.plug_actor_id_env].clone()
-
-        for t in range(rotate_steps):
-
-            # random small rotation axis
-            ax = (random.random() - 0.5) * 0.05    # small roll noise
-            ay = (random.random() - 0.5) * 0.05    # small pitch noise
-            az = random.uniform(0.8, 1.2) * 5*(np.pi/180)  # main yaw 2° ± 20%
-
-            # non-uniform scaling
-            rot_scale = random.uniform(0.4, 1.6)
-            ax *= rot_scale
-            ay *= rot_scale
-            az *= rot_scale
-
-            # convert to gymapi quaternion
-            dq = gymapi.Quat.from_euler_zyx(ax, ay, az)
-
-            # current quaternion
-            old_q = gymapi.Quat(q[0], q[1], q[2], q[3])
-
-            # compose rotation
-            new_q = dq * old_q
-
-            # write back
-            q_new_tensor = torch.tensor([new_q.x, new_q.y, new_q.z, new_q.w], device=self.device)
-            self.root_quat[env_id, self.plug_actor_id_env] = q_new_tensor
-            q = q_new_tensor
-
-            # sync to sim
-            self.gym.set_actor_root_state_tensor_indexed(
-                self.sim,
-                gymtorch.unwrap_tensor(self.root_state),
-                gymtorch.unwrap_tensor(idx),
-                1
-            )
-
-            # step sim
-            self.gym.simulate(self.sim)
-            self.gym.fetch_results(self.sim, True)
-            self.gym.step_graphics(self.sim)
-            self.gym.render_all_camera_sensors(self.sim)
-
-            # save RGB
-            rgb = self.get_wrist_camera_rgb()[0].astype(np.uint8)
-            imageio.imwrite(os.path.join(save_dir, f"image_{image_id:03d}.png"), rgb)
-            image_id+=1
-            print(f"Saved rotate_{t:03d}.png")
-
-        print("IGA demo finished.")
-
-
-
     def add_cameras(self):
         self.camera_handles = []
         # Shared base properties
         cam_props = gymapi.CameraProperties()
-        cam_props.width = 640   # your new resolution
-        cam_props.height = 480
+        cam_props.width = 640 * 2   # your new resolution
+        cam_props.height = 480 * 2
+        # cam_props.width = 640   # your new resolution
+        # cam_props.height = 480
         cam_props.enable_tensors = True
         self.cam_props=cam_props
         for env_ptr in self.env_ptrs:
@@ -523,7 +378,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # plug_grasp_path = os.path.join(os.getcwd(), self.cfg_task.env.data_dir, self.cfg_task.env.plug_grasp_file)
         # import pdb;pdb.set_trace()
-        plug_grasp_path="/lambda/nfs/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/plug_grasps.json"
+        if int(self.cfg_task.env.desired_subassemblies[0].replace("asset_","")) > 10000: # Self Generated Random Socket & Plug
+            task_id = self.cfg_task.env.desired_subassemblies[0].split("_")[1]
+            plug_grasp_path=f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/assets/automate/mesh/{task_id}/plug_grasp.json"
+        else:
+            plug_grasp_path="/lambda/nfs/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/plug_grasps.json"
         if os.path.exists(plug_grasp_path):
             in_file = open(plug_grasp_path, "r")
             plug_grasp_dict = json.load(in_file)
@@ -532,12 +391,22 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             raise FileNotFoundError(f"{plug_grasp_path} does not exist.")
 
         disassembly_dist_path = os.path.join(os.getcwd(), self.cfg_task.env.data_dir, self.cfg_task.env.disassembly_dist_file)
-        if os.path.exists(disassembly_dist_path):
-            in_file = open(disassembly_dist_path, "r")
-            disassembly_dist_dict = json.load(in_file)
-            disassembly_dists = [ disassembly_dist_dict[self.cfg_env.env.desired_subassemblies[self.asset_indices[i]]] for i in range(self.num_envs)]
+        if int(self.cfg_task.env.desired_subassemblies[0].replace("asset_","")) > 10000: # Self Generated Random Socket & Plug
+            task_id = self.cfg_task.env.desired_subassemblies[0].split("_")[1]
+            disassembly_dist_path=f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/assets/automate/mesh/{task_id}/assembly_height.json"
+            if os.path.exists(disassembly_dist_path):
+                in_file = open(disassembly_dist_path, "r")
+                disassembly_dist_dict = json.load(in_file)
+                disassembly_dists = [ disassembly_dist_dict[self.cfg_env.env.desired_subassemblies[self.asset_indices[i]]] for i in range(self.num_envs)]
+            else:
+                raise FileNotFoundError(f"{disassembly_dist_path} does not exist.")
         else:
-            raise FileNotFoundError(f"{disassembly_dist_path} does not exist.")
+            if os.path.exists(disassembly_dist_path):
+                in_file = open(disassembly_dist_path, "r")
+                disassembly_dist_dict = json.load(in_file)
+                disassembly_dists = [ disassembly_dist_dict[self.cfg_env.env.desired_subassemblies[self.asset_indices[i]]] for i in range(self.num_envs)]
+            else:
+                raise FileNotFoundError(f"{disassembly_dist_path} does not exist.")
 
         return torch.as_tensor(plug_grasps).to(self.device), torch.as_tensor(disassembly_dists).to(self.device)
 
@@ -553,7 +422,15 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
     def _refresh_task_tensors(self):
         """Refresh tensors."""
-        
+        num_envs = self.num_envs
+        yaw = 2 * torch.pi * torch.rand(num_envs, device=self.device)
+        half_yaw = yaw * 0.5
+
+        yaw_quat = torch.zeros((num_envs, 4), device=self.device)
+
+        # quaternion format (x, y, z, w)
+        yaw_quat[:, 2] = torch.sin(half_yaw)
+        yaw_quat[:, 3] = torch.cos(half_yaw)
         self.plug_grasp_quat, self.plug_grasp_pos = torch_jit_utils.tf_combine(self.plug_quat,
                                                                                self.plug_pos,
                                                                                self.plug_grasp_quat_local,
@@ -563,6 +440,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                                                                  self.plug_grasp_pos,
                                                                                  self.robot_to_gripper_quat,
                                                                                  self.palm_to_finger_center)
+        if self.random_gripper_orient:    
+            self.plug_grasp_quat = torch_jit_utils.quat_mul(
+                self.plug_grasp_quat,
+                yaw_quat
+            )
 
     def pre_physics_step(self, actions):
         """Reset environments. Apply actions from policy as position/rotation targets, force/torque targets, and/or PD gains."""
@@ -629,16 +511,15 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         self.reset_buf[env_ids] = 0
         self.progress_buf[env_ids] = 0
-       
+        self._init_log_data_per_assembly()
+        self._init_log_data_per_episode()
         self._move_gripper_to_plug_grasp_pose(env_ids, mode='pre_grasp', sim_steps=self.cfg_task.env.move_gripper_sim_steps)
-        
         self._move_gripper_to_plug_grasp_pose(env_ids, mode='grasp', sim_steps=self.cfg_task.env.move_gripper_sim_steps)
                 
         self.close_gripper(sim_steps=self.cfg_task.env.close_gripper_sim_steps)
 
         self.enable_gravity()
 
-        self._init_log_data_per_episode()
 
     def _reset_franka(self, env_ids):
         """Reset DOF states and DOF targets of Franka."""
@@ -668,122 +549,83 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                                 gymtorch.unwrap_tensor(self.franka_actor_ids_sim),
                                                 len(self.franka_actor_ids_sim))
 
-    # def _reset_object(self, env_ids):
-    #     """Reset root state of plug."""
-
-    #     # shape of root_pos = (num_envs, num_actors, 3)
-    #     # shape of root_quat = (num_envs, num_actors, 4)
-    #     # shape of root_linvel = (num_envs, num_actors, 3)
-    #     # shape of root_angvel = (num_envs, num_actors, 3)
-
-    #     # Randomize socket position 
-    #     self.socket_noise_xy = 2 * (torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
-    #     self.socket_noise_xy = self.socket_noise_xy @ torch.diag(torch.tensor(self.cfg_task.randomize.socket_pos_xy_noise, dtype=torch.float32, device=self.device))
-    #     self.root_pos[env_ids, self.socket_actor_id_env, 0] = self.robot_base_pos[env_ids, 0] + self.cfg_task.randomize.socket_pos_xy_initial[0] + self.socket_noise_xy[env_ids, 0]
-    #     self.root_pos[env_ids, self.socket_actor_id_env, 1] = self.robot_base_pos[env_ids, 1] + self.cfg_task.randomize.socket_pos_xy_initial[1] + self.socket_noise_xy[env_ids, 1]
-    #     self.root_pos[env_ids, self.socket_actor_id_env, 2] = self.cfg_base.env.table_height
-        
-    #     # Load plug in assembled state (i.e., move to socket position)
-    #     self.root_pos[env_ids, self.plug_actor_id_env, :] = self.root_pos[env_ids, self.socket_actor_id_env, :]
-
-    #     # Set plug and socket orientation to be upright
-    #     self.root_quat[env_ids, self.plug_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
-    #     self.root_quat[env_ids, self.socket_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
-    #     plug_socket_actor_ids_sim = torch.cat((self.plug_actor_ids_sim[env_ids], self.socket_actor_ids_sim[env_ids]), dim=0)
-    #     self.gym.set_actor_root_state_tensor_indexed(self.sim,
-    #                                                  gymtorch.unwrap_tensor(self.root_state),
-    #                                                  gymtorch.unwrap_tensor(plug_socket_actor_ids_sim),
-    #                                                  len(plug_socket_actor_ids_sim))
     def _reset_object(self, env_ids):
-        """Reset root state of plug and socket."""
+        """
+        Randomized version:
+        - random XY translation (shared)
+        - random yaw rotation (shared)
+        - still perfectly aligned plug & socket
+        """
 
-        # -------------------------
-        # Randomize socket position
-        # -------------------------
-        self.socket_noise_xy = 2 * (
-            torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5
-        )  # [-1,1]
-
-        self.socket_noise_xy = self.socket_noise_xy @ torch.diag(
-            torch.tensor(
-                self.cfg_task.randomize.socket_pos_xy_noise,
-                dtype=torch.float32,
-                device=self.device,
-            )
-        )
-        # self.socket_noise_xy[:] = 0
-        self.root_pos[env_ids, self.socket_actor_id_env, 0] = (
-            self.robot_base_pos[env_ids, 0]
-            + self.cfg_task.randomize.socket_pos_xy_initial[0]
-            + self.socket_noise_xy[env_ids, 0]
-        )
-
-        self.root_pos[env_ids, self.socket_actor_id_env, 1] = (
-            self.robot_base_pos[env_ids, 1]
-            + self.cfg_task.randomize.socket_pos_xy_initial[1]
-            + self.socket_noise_xy[env_ids, 1]
-        )
-
-        self.root_pos[
-            env_ids, self.socket_actor_id_env, 2
-        ] = self.cfg_base.env.table_height
-
-        # --------------------------------
-        # Load plug in assembled position
-        # --------------------------------
-        self.root_pos[env_ids, self.plug_actor_id_env, :] = self.root_pos[
-            env_ids, self.socket_actor_id_env, :
-        ]
-
-        # -------------------------
-        # Random yaw rotation
-        # -------------------------
         num_reset = len(env_ids)
 
-        yaw = 2 * torch.pi * torch.rand(num_reset, device=self.device)
-        # yaw[:]=0
-        half_yaw = yaw * 0.5
+        # -------------------------
+        # 1. Random XY translation
+        # -------------------------
+        xy_noise = 0.02  # 2 cm range (tune this)
+        rand_xy = (torch.rand((num_reset, 2), device=self.device) - 0.5) * 2 * xy_noise
 
-        quat = torch.zeros((num_reset, 4), dtype=torch.float32, device=self.device)
+        base_x = self.robot_base_pos[env_ids, 0] + 0.45
+        base_y = self.robot_base_pos[env_ids, 1]
 
-        # quaternion = (x, y, z, w)
-        quat[:, 2] = torch.sin(half_yaw)
-        quat[:, 3] = torch.cos(half_yaw)
+        socket_x = base_x + rand_xy[:, 0]
+        socket_y = base_y + rand_xy[:, 1]
 
-        # Apply SAME rotation to plug and socket
+        # -------------------------
+        # 2. Set socket position
+        # -------------------------
+        self.root_pos[env_ids, self.socket_actor_id_env, 0] = socket_x
+        self.root_pos[env_ids, self.socket_actor_id_env, 1] = socket_y
+        self.root_pos[env_ids, self.socket_actor_id_env, 2] = self.cfg_base.env.table_height
+
+        # -------------------------
+        # 3. Plug position (aligned)
+        # -------------------------
+        bottom_thickness = 0.00  # or your real value
+
+        self.root_pos[env_ids, self.plug_actor_id_env, 0] = socket_x
+        self.root_pos[env_ids, self.plug_actor_id_env, 1] = socket_y
+
+        self.root_pos[env_ids, self.plug_actor_id_env, 2] = (
+            self.root_pos[env_ids, self.socket_actor_id_env, 2]
+            + bottom_thickness
+            + 0.0005
+        )
+
+        # -------------------------
+        # 4. Random yaw rotation
+        # -------------------------
+        yaw = (torch.rand((num_reset,), device=self.device) - 0.5) * 2 * (90.0 * np.pi / 180.0)  # random yaw in [-90, 90] degrees
+        # yaw = 0
+        quat = torch.zeros((num_reset, 4), device=self.device)
+        quat[:, 2] = torch.sin(yaw * 0.5)  # z
+        quat[:, 3] = torch.cos(yaw * 0.5)  # w
+
+        # apply SAME rotation to both
         self.root_quat[env_ids, self.plug_actor_id_env] = quat
         self.root_quat[env_ids, self.socket_actor_id_env] = quat
 
-        # --------------------------------
-        # Write state back to simulator
-        # --------------------------------
+        # -------------------------
+        # 5. Apply to simulator
+        # -------------------------
+        
+
         plug_socket_actor_ids_sim = torch.cat(
-            (
-                self.plug_actor_ids_sim[env_ids],
-                self.socket_actor_ids_sim[env_ids],
-            ),
-            dim=0,
+            (self.plug_actor_ids_sim[env_ids], self.socket_actor_ids_sim[env_ids]), dim=0
         )
 
+        # 先清零速度
+        self.root_state[plug_socket_actor_ids_sim.long(), 7:13] = 0.0
+
+        # 再一次性把 pose + quat + vel 全部写回 simulator
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
             gymtorch.unwrap_tensor(self.root_state),
             gymtorch.unwrap_tensor(plug_socket_actor_ids_sim),
             len(plug_socket_actor_ids_sim),
         )
-        # import pdb;pdb.set_trace()
-        for i in range(self.num_envs):
-            env_ptr = self.env_ptrs[i]
 
-            socket_actor = self.socket_handles[i]
-
-            props = self.gym.get_actor_rigid_body_properties(env_ptr, socket_actor)
-
-            for p in props:
-                p.mass = 1e8
-                p.invMass = 0
-
-            self.gym.set_actor_rigid_body_properties(env_ptr, socket_actor, props, True)
+        self.init_root_pose = self.root_state[self.plug_actor_ids_sim.long(), :7].clone()
 
     def _reset_buffers(self, env_ids):
         """Reset buffers. """
@@ -1062,7 +904,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 camera2_depth_list = []
                 camera3_rgb_list=[]
                 camera3_depth_list=[]
-                height, width = 480, 640
+                # height, width = 480, 640
+                height, width = self.cam_props.height, self.cam_props.width
                 def fetch_image(env_id, cam_handle, cam_type, height, width):
                     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
                     if cam_type == gymapi.IMAGE_COLOR:
@@ -1147,6 +990,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # ---- Step 2: Interpolate trajectory over sim_steps ----
         for t in range(sim_steps + grace):
             log_step=if_log
+            # print("plug pos: ",self.plug_pos[0])
             if log_freq is not None and log_step:
                 log_step = (t % log_freq == 0)
             if t < sim_steps:
@@ -1203,6 +1047,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
             # Step simulation
             self.gym.simulate(self.sim)
+            self.gym.refresh_force_sensor_tensor(self.sim)
+            
             # print(self.fingertip_centered_pos[3], self.fingertip_centered_quat[3])
             # print(self.plug_pos[3], self.plug_quat[3])
             if log_step:
@@ -1220,7 +1066,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 camera3_mask_list=[]
                 camera3_vinv_list=[]
                 camera3_proj_list=[]
-                height, width = 480, 640
+                height, width = self.cam_props.height, self.cam_props.width
+                # height, width = 480, 640
+
                 def fetch_image(env_id, cam_handle, cam_type, height, width):
                     img = self.gym.get_camera_image(self.sim, self.env_ptrs[env_id], cam_handle, cam_type)
                     if cam_type == gymapi.IMAGE_COLOR:
@@ -1232,22 +1080,13 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     elif cam_type == gymapi.IMAGE_SEGMENTATION:
                         img = img.reshape(height, width)
                         return img
-                # for i in range(success_env_ids.shape[0]):
-            #         index=success_env_ids[i]
-            #         seg = self.gym.get_camera_image(
-            #             self.sim,
-            #             self.env_ptrs[i],
-            #             self.camera_handles[i]["panda"],
-            #             gymapi.IMAGE_SEGMENTATION
-            #         ).reshape(self.cam_props.height, self.cam_props.width)
-            #         mask_list.append(seg)
                 with ThreadPoolExecutor(max_workers=16) as executor:
                     futures = {
                         ("panda", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_DEPTH, height, width)
                         for env_id in range(len(self.env_ptrs))
                     }
-                    # if VISUALIZE_RGB:
-                    if self.cfg['seed'] == 0:
+                    if self.visualize_rgb:
+                    # if self.cfg['seed'] == 10:
                         futures.update({
                             ("panda", "color", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["panda"], gymapi.IMAGE_COLOR, height, width)
                             for env_id in range(len(self.env_ptrs))
@@ -1272,6 +1111,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     #     ("top", "depth", env_id): executor.submit(fetch_image, env_id, self.camera_handles[env_id]["top"], gymapi.IMAGE_DEPTH, height, width)
                     #     for env_id in range(len(self.env_ptrs))
                     # })
+                self.vec_sensor_tensor = gymtorch.wrap_tensor(self.gym.acquire_force_sensor_tensor(self.sim))
 
                 # # Collect results in order of env_id
                 for env_id in range(len(self.env_ptrs)):
@@ -1279,13 +1119,17 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     # camera1_depth_list.append(futures[("top", "depth", env_id)].result())
                     # camera2_rgb_list.append(futures[("bottom", "color", env_id)].result())
                     # camera2_depth_list.append(futures[("bottom", "depth", env_id)].result())
-                    # if VISUALIZE_RGB:
-                    if self.cfg['seed'] == 0:
+                    if self.visualize_rgb:
+                    # if self.cfg['seed'] == 10:
                         camera3_rgb_list.append(futures[("panda", "color", env_id)].result())
+
                     camera3_depth_list.append(futures[("panda", "depth", env_id)].result())
                     camera3_mask_list.append(futures[("panda", "segmentation", env_id)].result())
                     camera3_vinv_list.append(torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[env_id],self.camera_handles[env_id]["panda"]))).to(self.device).detach().cpu().numpy())
                     camera3_proj_list.append(torch.tensor(self.gym.get_camera_proj_matrix(self.sim,self.env_ptrs[env_id],self.camera_handles[env_id]["panda"])).to(self.device).detach().cpu().numpy())
+                # print("Appended force sensor data: ",self.vec_sensor_tensor.view(-1,3,6).clone().detach())
+                # self.force_traj.append((self.vec_sensor_tensor.view(-1,3,6).clone().detach()))
+                # print(self.vec_sensor_tensor.shape, self.vec_sensor_tensor[0])
                 # seg = self.gym.get_camera_image(
                 #     self.sim,
                 #     self.env_ptrs[env_id],
@@ -1295,8 +1139,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # # Convert to arrays if desired
                 # self.camera1_rgb_traj.append(np.stack(camera1_rgb_list)  )  # (envs, H, W, 3)
                 # self.camera2_rgb_traj.append(np.stack(camera2_rgb_list))   # (envs, H, W, 3)
-                # if VISUALIZE_RGB:
-                if self.cfg['seed'] == 0:
+                if self.visualize_rgb:
+                # if self.cfg['seed'] == 10:
                     self.camera3_rgb_traj.append(np.stack(camera3_rgb_list))   # (envs, H, W, 3)
                 self.camera3_mask_traj.append(np.stack(camera3_mask_list))   # (envs, H, W)
                 # self.camera1_depth_traj.append(np.stack(camera1_depth_list))   # (envs, H, W)
@@ -1342,8 +1186,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         elif mode=='pre_grasp':
             ctrl_tgt_pos[:, 2] += self.cfg_task.env.plug_pregrasp_offset
             ctrl_tgt_quat = torch.tensor([0.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
-
-        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log=False, close_gripper=False)
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, sim_steps, if_log=False, close_gripper=False, log_freq=10)
 
     def _disassemble_plug_from_socket(self):
         """Lift plug from socket till disassembly and then randomize end-effector pose."""
@@ -1357,7 +1200,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # self.simulate_and_refresh()
         # if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
         # env_ids = np.argwhere(if_intersect==0).reshape(-1)
-        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=True, close_gripper=True)
+        # self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=True, close_gripper=True)
 
     def disassemble_plug_dagger_generate_trajectory(self, ctrl_tgt_pos=None, ctrl_tgt_quat=None, ctrl_plug_pos = None, ctrl_plug_quat = None):
         ## First lift up the gripper
@@ -1440,7 +1283,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.simulate_and_refresh()
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
         print(env_ids)
-        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=True, close_gripper=True, log_freq=log_freq)
+        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=False, close_gripper=True, log_freq=log_freq)
 
     def disassemble_plug_from_socket_eval_init(self):
         """Lift plug from socket till disassembly and then randomize end-effector pose."""
@@ -1453,7 +1296,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
         print(env_ids)
         # self.success_env_ids = env_ids.copy()
-        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=False, close_gripper=True)
+        self._randomize_gripper_pose(env_ids, self.cfg_task.env.move_gripper_sim_steps, if_log=False, close_gripper=True, log_freq=30)
 
     def _lift_gripper_eval_init(self, lift_distance, sim_steps, env_ids=None):
         """Lift gripper by specified distance. Called outside RL loop (i.e., after last step of episode)."""
@@ -1527,9 +1370,9 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         lift_height=self.disassembly_dists * 1.4
         
         target_gripper_pos = self.fingertip_centered_pos.clone()
-        target_gripper_pos[:,2] += lift_height
+        target_gripper_pos[:,2] = target_gripper_pos[:,2] + lift_height
         target_gripper_quat=self.fingertip_centered_quat.clone()
-        self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 400, if_log=if_log, close_gripper=True, log_freq=5, grace = 40)
+        self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 100, if_log=False, close_gripper=True, log_freq=5, grace = 10)
         
         # success lift up threshold to define
         # 00062: 4.2328e-1
@@ -1557,8 +1400,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         dist_mask = (dist_xy < distance_threshold).cpu().numpy().reshape(-1)
        
         ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
-        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, self.fingertip_centered_quat.clone(), 120, if_log, close_gripper,log_freq=log_freq)
-        
+        # extra random yaw around z-axis
+        yaw_noise = (2 * torch.pi * torch.rand((self.num_envs,), device=self.device) - torch.pi) / 2
+
+        yaw_quat = torch.zeros((self.num_envs, 4), device=self.device)
+        yaw_quat[:, 2] = torch.sin(yaw_noise * 0.5)  # z
+        yaw_quat[:, 3] = torch.cos(yaw_noise * 0.5)  # w
+
+        # compose yaw with existing target rotation
+        ctrl_tgt_quat = torch_utils.quat_mul(yaw_quat, self.fingertip_centered_quat.clone())
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 240, if_log, close_gripper,log_freq=log_freq)
+        # print(self.plug_pos[:,2])
+        # print(self.socket_pos[:, 2] + self.disassembly_dists)
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
         angle_deg = 2 * torch.rad2deg(torch.acos(
                 torch.abs(torch.sum(
@@ -1577,102 +1430,6 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         print(height_mask)
         self.success_env_ids = np.argwhere(final_mask).reshape(-1)
         print(self.success_env_ids)
-    # def _randomize_gripper_pose(self, env_ids, sim_steps, if_log, close_gripper, log_freq=1):
-    #     """Move gripper to a random target pose with smooth motion (no per-step noise)."""
-
-    #     # ---- Step 1: Randomize target position ----
-    #     ctrl_tgt_pos = torch.empty_like(self.fingertip_centered_pos).copy_(self.fingertip_centered_pos)
-    #     ctrl_tgt_pos[:, 2] += self.cfg_task.randomize.gripper_rand_z_offset # 0.05 
-    #     # Sample random offset ONCE (no per-step jitter)
-    #     rand_pos_offset = torch.zeros((self.num_envs, 3), device=self.device)
-    #     # rand_pos_offset[:, 0:2] = 0.04 * torch.rand((self.num_envs, 2), device=self.device) - 0.02  # x,y ∈ [-0.02, 0.02]
-    #     # print(rand_pos_offset)
-    #     # rand_pos_offset[:, 2] = 0.01 * torch.rand((self.num_envs,), device=self.device)  
-    #     rand_pos_offset[:, 0:2] = 0.02 * torch.rand((self.num_envs, 2), device=self.device) - 0.01  # x,y ∈ [-0.02, 0.02]
-    #     # print(rand_pos_offset)
-    #     rand_pos_offset[:, 2] = 0.005 * torch.rand((self.num_envs,), device=self.device) + 0.005  
-    #     ctrl_tgt_pos += rand_pos_offset
-    #     ctrl_tgt_pos[:,2] += self.disassembly_dists * 3.0
-
-    #     # ---- Step 2: Randomize target rotation ----
-    #     base_euler = torch.tensor(
-    #         self.cfg_task.randomize.fingertip_centered_rot_initial, device=self.device
-    #     ).unsqueeze(0).repeat(self.num_envs, 1)
-
-    #     rand_rot_offset = (2 * torch.rand((self.num_envs, 3), device=self.device) - 1.0)
-    #     rand_rot_offset = rand_rot_offset @ torch.diag(
-    #         torch.tensor(self.cfg_task.randomize.gripper_rand_rot_noise, device=self.device)
-    #     )
-    #     ctrl_target_euler = base_euler + rand_rot_offset
-    #     ctrl_tgt_quat = torch_utils.quat_from_euler_xyz(
-    #         ctrl_target_euler[:, 0], ctrl_target_euler[:, 1], ctrl_target_euler[:, 2]
-    #     )
-
-    #     up_tgt=self.fingertip_centered_pos.clone()
-    #     up_tgt[:,2] += self.disassembly_dists * 3
-    #     self.init_plug_pos=self.plug_pos.clone()
-    #     self.init_plug_quat=self.plug_quat.clone()
-    #     # 00062: 0.04
-    #     # 01053: 
-    #     lift_height=self.disassembly_dists * 1.4
-        
-    #     target_gripper_pos = self.fingertip_centered_pos.clone()
-    #     target_gripper_pos[:,2] += lift_height
-    #     target_gripper_quat=self.fingertip_centered_quat.clone()
-    #     self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 400, if_log=if_log, close_gripper=True, log_freq=5)
-        
-    #     # success lift up threshold to define
-    #     # 00062: 4.2328e-1
-    #     # threshold = 3.9328e-1
-    #     threshold = 0
-    #     # 3. height mask
-    #     height_mask = (self.plug_pos[:, 2].cpu().numpy() > threshold).reshape(-1)
-    #     # print(self.plug_pos[:,2])
-    #     # Combine all three conditions
-    #     # Get the indices (env IDs)
-    #     # dist to center 
-    #     # calculate distance self.plug_pos[:,:2] - self.init_plug_pos[:,:2] 计算xy距离
-    #     # mask < dist threshold
-    #     # print(self.plug_pos)
-    #     # print(self.init_plug_pos)
-    #     dist_xy = torch.norm(self.plug_pos[:, :2] - self.init_plug_pos[:, :2], dim=-1)
-    #     # print(dist_xy)
-    #     distance_threshold=0.0015
-    #     if self.cfg_task.env.desired_subassemblies[0] == "asset_01102":
-    #         distance_threshold=0.0025
-    #     if self.cfg_task.env.desired_subassemblies[0] == "asset_01053":
-    #         distance_threshold=0.0035
-    #     if self.cfg_task.env.desired_subassemblies[0] == "asset_01079":
-    #         distance_threshold=0.0025
-    #     dist_mask = (dist_xy < distance_threshold).cpu().numpy().reshape(-1)
-    #     if self.cfg_task.env.desired_subassemblies[0] == "asset_01102":
-    #         ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
-    #         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, self.fingertip_centered_quat.clone(), 40, if_log, close_gripper,log_freq=log_freq)
-    #     elif self.cfg_task.env.desired_subassemblies[0] == "asset_01053":
-    #         ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
-    #         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, self.fingertip_centered_quat.clone(), 40, if_log, close_gripper,log_freq=log_freq)
-    #     else:
-    #         ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
-    #         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, self.fingertip_centered_quat.clone(), 40, if_log, close_gripper,log_freq=log_freq)
-        
-    #     if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
-    #     angle_deg = 2 * torch.rad2deg(torch.acos(
-    #             torch.abs(torch.sum(
-    #                 self.fingertip_centered_quat * self.plug_quat, dim=-1).clamp(-1, 1))
-    #         ))
-    #     valid_mask = torch.abs(angle_deg - 180) < 8
-    #     no_intersect_mask = (if_intersect == 0).reshape(-1)
-    #     # 2. orientation mask
-    #     valid_mask_np = valid_mask.cpu().numpy().reshape(-1)
-    #     if self.cfg_task.env.desired_subassemblies[0] != "asset_01053":
-    #         final_mask = no_intersect_mask & valid_mask_np 
-    #     else:
-    #         final_mask = no_intersect_mask & valid_mask_np & height_mask & dist_mask
-    #     print(no_intersect_mask)
-    #     print(valid_mask_np)
-    #     print(height_mask)
-    #     self.success_env_ids = np.argwhere(final_mask).reshape(-1)
-    #     print(self.success_env_ids)
 
 
 
@@ -1769,6 +1526,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.log_plug_grasp_quat = []
         self.log_fingertip_centered_pos = []
         self.log_fingertip_centered_quat = []
+        self.log_force_traj = []
         self.log_arm_dof_pos = []
 
     def _init_log_data_per_episode(self):
@@ -1793,7 +1551,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.camera3_mask_traj=[]
         self.camera3_vinv_traj=[]
         self.camera3_proj_traj=[]
-
+        self.force_traj=[]
         self.init_plug_grasp_pos = self.plug_grasp_pos.clone().detach()
         self.init_plug_grasp_quat = self.plug_grasp_quat.clone().detach()
         self.init_plug_pos = self.plug_pos.clone().detach()
@@ -1932,19 +1690,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # print(f"Generated reverse videos: {cam1_video}, {cam2_video}, {cam3_video}")
     
-    def _save_log_traj(self,action=None):
+    def _save_log_traj(self,action=None, force=None):
         if len(self.log_arm_dof_pos) > -1:
-        # if len(self.log_arm_dof_pos) > self.cfg_task.env.num_log_traj:
         
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "flow_0307_forward", self.cfg_task.env.desired_subassemblies[0],
-                f"disassembly_traj_{self.cfg['seed']}.h5"
+                "flow_0412_forward_force", self.cfg_task.env.desired_subassemblies[0],
+                f"disassembly_traj_{self.run_id}.h5"
             )
             log_dir = os.path.dirname(log_filename)
             os.makedirs(log_dir, exist_ok=True)
-            print(f"Logging Run {self.cfg['seed']}")
+            print(f"Logging Run {self.run_id}")
             success_env_ids=self.success_env_ids
             if  LOG_VISUAL:
                 # success_env_ids = torch.tensor([0,1])
@@ -1972,11 +1729,17 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             #             gymapi.IMAGE_SEGMENTATION
             #         ).reshape(self.cam_props.height, self.cam_props.width)
             #         mask_list.append(seg)
-            mask_uint8 = np.stack(self.camera3_mask_traj, axis=0).astype(np.uint8)[:,success_env_ids,...]
+            mask_uint8 = np.stack(self.camera3_mask_traj, axis=0).astype(np.uint8)[:,success_env_ids.detach().cpu().numpy(),...]
             # mask_uint8 = np.stack(mask_list).astype(np.uint8)
             with h5py.File(log_filename, "w") as f:
                 # ---- Convert lists to numpy before saving ----
-                f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
+                if force is not None:
+                    f.create_dataset("force", data=force)
+                try:
+                    f.create_dataset("fingertip_centered_pos", data=np.array(self.log_fingertip_centered_pos))
+                except Exception as e:
+                    print(f"Error saving fingertip_centered_pos: {e}")
+                    import pdb;pdb.set_trace()
                 f.create_dataset("fingertip_centered_quat", data=np.array(self.log_fingertip_centered_quat))
                 # f.create_dataset("arm_dof_pos", data=np.array(self.log_arm_dof_pos))
                 # f.create_dataset("plug_grasp_pos", data=np.array(self.log_plug_grasp_pos))
@@ -1991,13 +1754,14 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 print("Saving RGBD")
                 # cam1_rgb = np.stack(self.camera1_rgb_traj, axis=0).astype(np.uint8)   # (180, N, H, W, 3)
                 # cam2_rgb = np.stack(self.camera2_rgb_traj, axis=0).astype(np.uint8)
-                if VISUALIZE_RGB:
-                    cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)[:,success_env_ids,...]
+                # if self.visualize_rgb:
+                # if VISUALIZE_RGB:
+                    # cam3_rgb = np.stack(self.camera3_rgb_traj, axis=0).astype(np.uint8)[:,success_env_ids,...]
                 # cam1_depth = np.stack(self.camera1_depth_traj, axis=0).astype(np.float32)  # (180, N, H, W)
                 # cam2_depth = np.stack(self.camera2_depth_traj, axis=0).astype(np.float32)
-                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
-                cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
-                cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
+                cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
+                cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
+                cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
                 f.create_dataset("camera3_vinv", data=cam3_vinv, compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("camera3_proj", data=cam3_proj, compression="gzip", compression_opts=4, chunks=True)
                 print("Finish Converting")
@@ -2006,8 +1770,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 # f.create_dataset("camera2_rgb", data=cam2_rgb, compression="gzip", compression_opts=4)
                 # f.create_dataset("camera1_depth", data=cam1_depth, compression="gzip", compression_opts=4)
                 # f.create_dataset("camera2_depth", data=cam2_depth, compression="gzip", compression_opts=4)
-                if VISUALIZE_RGB:
-                    f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4,chunks=True)
+                # if self.visualize_rgb:
+                    # f.create_dataset("camera3_rgb", data=cam3_rgb, compression="gzip", compression_opts=4,chunks=True)
                 f.create_dataset("mask", data=mask_uint8, compression="gzip", compression_opts=1)
                 f.create_dataset("camera3_depth", data=cam3_depth, compression="gzip", compression_opts=4, chunks=True)
             # import pdb;pdb.set_trace()
@@ -2017,10 +1781,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             # pos=np.load("error_pos.npy")
             # current_pos=self.fingertip_centered_pos[0]
 
-            os._exit(0)
-        else:
-            self.save_first_env_images()
-            print("current logging item num: ", len(self.log_arm_dof_pos))
-            os._exit(0)
+            # os._exit(0)
+        # else:
+        #     self.save_first_env_images()
+        #     print("current logging item num: ", len(self.log_arm_dof_pos))
+        #     os._exit(0)
             
         

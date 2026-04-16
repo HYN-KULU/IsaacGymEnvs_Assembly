@@ -13,6 +13,7 @@ class FlowPolicy(nn.Module):
             out_channels=2,  # dense flow (dx, dy)
             channels=(32, 64, 128, 256, 512),
             strides=(1, 1, 1, 1),   # keep resolution = 480 × 640
+            norm=("GROUP", {"num_groups":8})
         )
 
     def forward(self, init_mask, cur_depth):
@@ -29,7 +30,9 @@ def test_flow_policy():
 
     model = FlowPolicy().to(device)
     model.eval()
-
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.BatchNorm2d, nn.InstanceNorm2d)):
+            print(name, "->", module)
     B = 2
     H, W = 240 , 320
 
@@ -45,3 +48,4 @@ def test_flow_policy():
 
 if __name__ == "__main__":
     test_flow_policy()
+    

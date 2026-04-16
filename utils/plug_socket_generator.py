@@ -932,33 +932,43 @@ def visualize_profiles(profile, hole_profile=None, socket_profile=None, save_pat
 
 
 if __name__ == "__main__":
-    base_dir = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/assets/automate/mesh/10001"
+    asset_ids = [f"{asset_id}" for asset_id in range(30001,30010)]
+    failist=[]
+    for asset_id in asset_ids:
 
-    result = save_asset_bundle(
-        save_dir=base_dir,
-        asset_id="10001",
-        target_extent=0.010,
-        insertion_height=0.030,
-        grasp_post_height=0.035,
-        grasp_post_radius=0.004,
-        post_blend_height=0.004,
-        socket_height=0.035,
-        clearance=0.0008,
-        wall_thickness=0.004,
-        entrance_relief=0.0005,
-        entrance_depth=0.030,   # cavity depth; set near insertion height if desired
-        outer_margin=0.0015,
-        socket_smooth_radius=0.00030,
-        socket_simplify_tol=0.00008,
-        trim_extra_height=0.003,
-        triangle_max_area=None,
-        seed=4029,
-        # seed=48910,
-    )
+        try:
+            print(asset_id)
+            base_dir = f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/assets/automate/mesh/{asset_id}"
 
-    visualize_profiles(
-        result["profile"],
-        hole_profile=result["hole_profile"],
-        socket_profile=result["socket_profile"],
-        save_path=os.path.join(base_dir, "profiles.png"),
-    )
+            result = save_asset_bundle(
+                save_dir=base_dir,
+                asset_id=asset_id,
+                target_extent=0.010,
+                insertion_height=0.030,
+                grasp_post_height=0.035,
+                grasp_post_radius=0.004,
+                post_blend_height=0.004,
+                socket_height=0.035,
+                clearance=0.0008,
+                wall_thickness=0.004,
+                entrance_relief=0.0005,
+                entrance_depth=0.030,   # cavity depth; set near insertion height if desired
+                outer_margin=0.0015,
+                socket_smooth_radius=0.00030,
+                socket_simplify_tol=0.00008,
+                trim_extra_height=0.003,
+                triangle_max_area=None,
+                seed=int(asset_id) * 2,
+                # seed=48910,
+            )
+
+            visualize_profiles(
+                result["profile"],
+                hole_profile=result["hole_profile"],
+                socket_profile=result["socket_profile"],
+                save_path=os.path.join(base_dir, "profiles.png"),
+            )
+        except:
+            print(f"Failed to generate asset {asset_id}.")
+            failist.append(asset_id)
+        print(failist)
