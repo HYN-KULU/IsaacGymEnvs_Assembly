@@ -239,6 +239,20 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
         self.plug_actor_ids_sim = []  # within-sim indices
         self.socket_actor_ids_sim = []  # within-sim indices
         actor_count = 0
+        hand_idx = self.gym.find_asset_rigid_body_index(franka_asset, "panda_hand")
+        left_finger_idx = self.gym.find_asset_rigid_body_index(franka_asset, "panda_leftfinger")
+        right_finger_idx = self.gym.find_asset_rigid_body_index(franka_asset, "panda_rightfinger")
+        sensor_pose = gymapi.Transform()
+        sensor_pose.p = gymapi.Vec3(0.0, 0.0, 0.0)
+        sensor_props = gymapi.ForceSensorProperties()
+        sensor_props.enable_forward_dynamics_forces = True
+        sensor_props.enable_constraint_solver_forces = True
+        sensor_props.use_world_frame = True
+        self.gym.create_asset_force_sensor(franka_asset, hand_idx, gymapi.Transform(), sensor_props)
+        self.gym.create_asset_force_sensor(franka_asset, left_finger_idx, gymapi.Transform(), sensor_props)
+        self.gym.create_asset_force_sensor(franka_asset, right_finger_idx, gymapi.Transform(), sensor_props)
+        print("Add Force Sensor")
+        
 
         for i in range(self.num_envs):
 
@@ -383,8 +397,8 @@ class AutoMateEnv(AutoMateBase, FactoryABCEnv):
                                                                                     'panda_fingertip_centered',
                                                                                    gymapi.DOMAIN_ACTOR)
         self.panda_camera_id=self.gym.find_actor_rigid_body_index(env_ptr,franka_handle,'panda_camera', gymapi.DOMAIN_ACTOR)
-        
         print("Add Panda Camera")
+
 
     def _acquire_env_tensors(self):
         """Acquire and wrap tensors. Create views."""
