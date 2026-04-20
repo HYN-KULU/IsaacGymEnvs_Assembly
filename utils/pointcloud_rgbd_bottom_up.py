@@ -181,7 +181,7 @@ def create_socket_with_structured_points():
     
     return points, colors, center_x, center_y
 
-def render_top_down_custom(
+def render_bottom_up_custom(
     points,
     colors,
     H=480,
@@ -193,11 +193,11 @@ def render_top_down_custom(
     background_color=(0.0, 0.0, 0.0),
 ):
     """
-    Render a point cloud from a top-down camera using point splatting.
+    Render a point cloud from a bottom-up camera using point splatting.
 
     Camera convention:
-    - camera looks toward world -Z
-    - image up is world -X
+    - camera looks toward world +Z
+    - image up is world +X
     - image right is world +Y
 
     Args:
@@ -205,7 +205,7 @@ def render_top_down_custom(
         colors: (N, 3) torch tensor, either in [0,1] or [0,255]
         H, W: output image size
         fov_deg: vertical field of view
-        camera_height_offset: camera height above top of object
+        camera_height_offset: camera height below bottom of object
         brightness_scale: multiply colors before clamping
         point_radius: splat radius in pixels
         background_color: tuple of 3 floats in [0,1]
@@ -217,6 +217,7 @@ def render_top_down_custom(
     device = points.device
     points = points.float()
     colors = colors.float()
+
     # Normalize colors if needed
     if colors.max() > 1.0:
         colors = colors / 255.0
@@ -224,18 +225,20 @@ def render_top_down_custom(
     # Brightness adjustment
     colors = torch.clamp(colors * brightness_scale, 0.0, 1.0)
 
-    # Estimate object center and top
-    center_x = (points[:, 0].min() + points[:, 0].max()) / 2
-    center_y = (points[:, 1].min() + points[:, 1].max()) / 2
-    top_z = points[:, 2].max()
+    # Estimate object center and bottom
+    # center_x = (points[:, 0].min() + points[:, 0].max()) / 2
+    # center_y = (points[:, 1].min() + points[:, 1].max()) / 2
+    center_x = 0
+    center_y = -0.05
+    bottom_z = points[:, 2].min()
 
     camera_pos = torch.tensor(
-        [center_x, center_y, top_z + camera_height_offset],
+        [center_x, center_y, bottom_z - camera_height_offset],
         device=device,
         dtype=torch.float32,
     )
     camera_target = torch.tensor(
-        [center_x, center_y, top_z],
+        [center_x, center_y, bottom_z],
         device=device,
         dtype=torch.float32,
     )
@@ -259,8 +262,8 @@ def render_top_down_custom(
         view[2, 3] = torch.dot(forward, eye)
         return view
 
-    # Image up = world -X
-    world_up = torch.tensor([-1.0, 0.0, 0.0], device=device, dtype=torch.float32)
+    # Image up = world +X
+    world_up = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=torch.float32)
     view_mat = look_at(camera_pos, camera_target, world_up)
 
     # Perspective projection
@@ -284,7 +287,6 @@ def render_top_down_custom(
     # World -> view -> clip
     points_view = points_h @ view_mat.T
     points_clip = points_view @ proj_mat.T
-
     # Keep points in front of camera
     valid = points_view[:, 2] < 0
     if not valid.any():
@@ -332,9 +334,9 @@ def render_top_down_custom(
     bg = torch.tensor(background_color, device=device, dtype=torch.float32)
     rgb_img = bg.view(1, 1, 3).repeat(H, W, 1).clone()
     depth_img = torch.full((H, W), far, device=device, dtype=torch.float32)
-
     # Point splatting
     for i in range(len(u)):
+        print("Processing point {}/{}: u={:.1f}, v={:.1f}, z={:.3f}".format(i+1, len(u), u[i].item(), v[i].item(), z[i].item()), end="\r")
         ui = int(round(u[i].item()))
         vi = int(round(v[i].item()))
         zi = z[i]
@@ -347,7 +349,6 @@ def render_top_down_custom(
 
         for vv in range(v0, v1 + 1):
             for uu in range(u0, u1 + 1):
-                # circular splat
                 if (uu - ui) ** 2 + (vv - vi) ** 2 > point_radius ** 2:
                     continue
 
@@ -371,70 +372,64 @@ def render_top_down_custom(
     return rgb_img, depth_img
 
 
-if __name__ == "__main__":
 
+# Run the experiment
+print("=" * 60)
+print("CREATING COLORED CYLINDER")
+print("=" * 60)
 
-    # Run the experiment
-    print("=" * 60)
-    print("CREATING COLORED CYLINDER")
-    print("=" * 60)
+# Create cylinder
+points, colors , _, _= create_socket_with_structured_points()
 
-    # Create cylinder
-    points, colors , _, _= create_socket_with_structured_points()
-    data=torch.load("./pointcloud.pth")
-    points= data["points"].cpu()
-    colors= data["colors"].cpu()
-    points = data["points"].cpu().float()
-    colors = data["colors"].cpu().float()
+fig = visualize_pointcloud_plotly(
+        points, 
+        colors, 
+        max_points=50000,
+        save_path="cylinder_pointcloud.html"
+    )
+print(f"Points shape: {points.shape}")
+print(f"X range: [{points[:,0].min():.2f}, {points[:,0].max():.2f}]")
+print(f"Y range: [{points[:,1].min():.2f}, {points[:,1].max():.2f}]")
+print(f"Z range: [{points[:,2].min():.2f}, {points[:,2].max():.2f}]")
+print(f"Color range - Red: [{colors[:,0].min():.2f}, {colors[:,0].max():.2f}]")
+print(f"Color range - Blue: [{colors[:,2].min():.2f}, {colors[:,2].max():.2f}]")
 
-    if colors.max() > 1.0:
-        colors = colors / 255.0
-    fig = visualize_pointcloud_plotly(
-            points, 
-            colors, 
-            max_points=50000,
-            save_path="cylinder_pointcloud.html"
-        )
-    print(f"Points shape: {points.shape}")
-    print(f"X range: [{points[:,0].min():.2f}, {points[:,0].max():.2f}]")
-    print(f"Y range: [{points[:,1].min():.2f}, {points[:,1].max():.2f}]")
-    print(f"Z range: [{points[:,2].min():.2f}, {points[:,2].max():.2f}]")
-    print(f"Color range - Red: [{colors[:,0].min():.2f}, {colors[:,0].max():.2f}]")
-    print(f"Color range - Blue: [{colors[:,2].min():.2f}, {colors[:,2].max():.2f}]")
+print("\n" + "=" * 60)
+print("RENDERING TOP-DOWN VIEW")
+print("Camera: up = -X, right = +Y, looking down")
+print("=" * 60)
 
-    print("\n" + "=" * 60)
-    print("RENDERING TOP-DOWN VIEW")
-    print("Camera: up = -X, right = +Y, looking down")
-    print("=" * 60)
+data = torch.load("pointcloud.pth")
+points = data["points"]
+colors = data["colors"]
+# Render
+rgb_img, depth_img = render_bottom_up_custom(points, colors, H=480, W=960, camera_height_offset=0.18, fov_deg=30, point_radius=5)
 
-    # Render
-    rgb_img, depth_img = render_top_down_custom(points, colors, H=480, W=960, camera_height_offset=0.08, fov_deg=30, brightness_scale=2, point_radius=5)
-
-    if rgb_img is not None:
-        # Convert to numpy and save
-        rgb_np = (rgb_img.cpu().numpy() * 255).astype(np.uint8)
-        
-        # Save RGB image
-        Image.fromarray(rgb_np).save("cylinder_top_down.png")
-        print("\n✓ Saved: cylinder_top_down.png")
-        
-        # Also save depth visualization
-        depth_np = depth_img.cpu().numpy()
-        depth_normalized = (depth_np / depth_np.max() * 255).astype(np.uint8)
-        Image.fromarray(depth_normalized).save("cylinder_top_down_depth.png")
-        print("✓ Saved: cylinder_top_down_depth.png")
-        
-        # Print some debug info
-        print("\nDebug Info:")
-        print(f"  Image size: {rgb_np.shape}")
-        print(f"  Non-black pixels: {(rgb_np.sum(axis=2) > 0).sum()}")
-        
-        # Check colors at specific pixels (center, edges)
-        center_u, center_v = 320, 240
-        print(f"\n  Color at center (u={center_u}, v={center_v}): {rgb_np[center_v, center_u]}")
-        
-        # Expected: Center x≈1, y≈0 should have red≈0.5, blue≈0.5
-        print("  Expected center: red~128, blue~128 (since x=1→red=0.5, y=0→blue=0.5)")
-        
-    else:
-        print("Failed to render!")
+if rgb_img is not None:
+    # Convert to numpy and save
+    rgb_np = (rgb_img.cpu().numpy() * 255).astype(np.uint8)
+    
+    # Save RGB image
+    Image.fromarray(rgb_np).save("cylinder_top_down.png")
+    print("\n✓ Saved: cylinder_top_down.png")
+    
+    # Also save depth visualization
+    depth_np = depth_img.cpu().numpy()
+    depth_normalized = (depth_np / depth_np.max() * 255).astype(np.uint8)
+    Image.fromarray(depth_normalized).save("cylinder_top_down_depth.png")
+    print("✓ Saved: cylinder_top_down_depth.png")
+    
+    # Print some debug info
+    print("\nDebug Info:")
+    print(f"  Image size: {rgb_np.shape}")
+    print(f"  Non-black pixels: {(rgb_np.sum(axis=2) > 0).sum()}")
+    
+    # Check colors at specific pixels (center, edges)
+    center_u, center_v = 320, 240
+    print(f"\n  Color at center (u={center_u}, v={center_v}): {rgb_np[center_v, center_u]}")
+    
+    # Expected: Center x≈1, y≈0 should have red≈0.5, blue≈0.5
+    print("  Expected center: red~128, blue~128 (since x=1→red=0.5, y=0→blue=0.5)")
+    
+else:
+    print("Failed to render!")

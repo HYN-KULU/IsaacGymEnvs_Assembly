@@ -225,6 +225,57 @@ def depth_image_to_point_cloud_GPU(camera_tensor: torch.Tensor,
     return points_rgb
 
 
+
+@torch.jit.script
+def depth_image_to_point_cloud_GPU_nomask(camera_tensor: torch.Tensor,
+                                   colors: torch.Tensor,
+                                   camera_view_matrix_inv: torch.Tensor,
+                                   camera_proj_matrix: torch.Tensor,
+                                   u: torch.Tensor,
+                                   v: torch.Tensor,
+                                   width: float,
+                                   height: float,
+                                   depth_bar: float,
+                                   device: torch.device
+                                   ) -> torch.Tensor:
+    # Depth and intrinsics
+    depth_buffer = camera_tensor.to(device)
+    vinv = camera_view_matrix_inv
+    proj = camera_proj_matrix
+    fu = 2.0 / proj[0, 0]
+    fv = 2.0 / proj[1, 1]
+
+    centerU = width / 2.0
+    centerV = height / 2.0
+    # Project into 3D
+    Z = depth_buffer
+    X = -(u - centerU) / width * Z * fu
+    Y =  (v - centerV) / height * Z * fv
+
+    # Flatten
+    Z = Z.reshape(-1)
+    X = X.reshape(-1)
+    Y = Y.reshape(-1)
+
+    # Flatten colors (H, W, 3) -> (N, 3)
+    colors = colors.reshape(-1, 3)
+
+    # Mask valid points
+    valid = Z > -depth_bar
+    X = X[valid]
+    Y = Y[valid]
+    Z = Z[valid]
+    colors = colors[valid]
+
+    # Homogeneous coords
+    position = torch.vstack((X, Y, Z, torch.ones(len(X), device=device))).permute(1, 0)
+    position = position @ vinv
+    points = position[:, 0:3]  # (N, 3)
+
+    # Concatenate with colors -> (N, 6)
+    points_rgb = torch.cat((points, colors), dim=1)
+    return points_rgb
+
 class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
     def __init__(
         self,
@@ -313,56 +364,14 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         return fx, fy, cx, cy
         
-    # def add_cameras(self):
-    #     self.camera_handles = []
-    #     # Shared base properties
-    #     cam_props = gymapi.CameraProperties()
-    #     cam_props.width = 640 * 2   # your new resolution
-    #     cam_props.height = 480 * 2
-    #     # cam_props.width = 640   # your new resolution
-    #     # cam_props.height = 480
-    #     cam_props.enable_tensors = True
-    #     self.cam_props=cam_props
-    #     for env_ptr in self.env_ptrs:
-    #         cam_prop={}
-    #         env_cameras = {}
-    #         theta_deg = 120   # example: tilt downward 45°
-    #         theta_rad = math.radians(theta_deg) 
-    #         offset = gymapi.Transform(
-    #             p=gymapi.Vec3(0.00, 0.0, 0.0),
-    #             r=gymapi.Quat.from_euler_zyx(0, -theta_rad, 0)  # tilt downward by theta_deg
-    #         )
-    #         cam_handle_panda=self.gym.create_camera_sensor(env_ptr,cam_props)
-    #         self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,offset,gymapi.FOLLOW_TRANSFORM)
-    #         env_cameras["panda"]=cam_handle_panda
-
-    #         cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
-    #         self.gym.set_camera_location(
-    #             cam_handle_bottom, env_ptr,
-    #             gymapi.Vec3(0, -0.05 - 0.15, 0.45),  # your bottom cam pos
-    #             gymapi.Vec3(-0.01, -0.049 - 0.15, 0.8)                    # look upward-ish
-    #             # gymapi.Vec3(0, -0.05, 0.45),  # your bottom cam pos
-    #             # gymapi.Vec3(-0.1, 0, 0.8)                    # look upward-ish
-    #         )
-    #         env_cameras["bottom"] = cam_handle_bottom
-    #         # torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[env_id],self.camera_handles[env_id]["panda"])))
-    #         # Top Camera Handle
-    #         cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
-    #         self.gym.set_camera_location(
-    #             cam_handle_top, env_ptr,
-    #             gymapi.Vec3(0.16, 0.12, 0.8),  # your top cam pos
-    #             gymapi.Vec3(0, 0, 0.3)                                 # look at target
-    #         )
-    #         env_cameras["top"] = cam_handle_top
-    #         self.camera_handles.append(env_cameras)
-    #         print(torch.inverse(torch.tensor(self.gym.get_camera_view_matrix(self.sim,self.env_ptrs[0],self.camera_handles[0]["top"]))))
-
     def add_cameras(self):
         self.camera_handles = []
         # Shared base properties
         cam_props = gymapi.CameraProperties()
-        cam_props.width = 1280   # your new resolution
-        cam_props.height = 960
+        cam_props.width = 640 * 2   # your new resolution
+        cam_props.height = 480 * 2
+        # cam_props.width = 640   # your new resolution
+        # cam_props.height = 480
         cam_props.enable_tensors = True
         self.cam_props=cam_props
         for env_ptr in self.env_ptrs:
@@ -374,54 +383,103 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 p=gymapi.Vec3(0.00, 0.0, 0.0),
                 r=gymapi.Quat.from_euler_zyx(0, -theta_rad, 0)  # tilt downward by theta_deg
             )
-            # offset = gymapi.Transform(
-            #     p=gymapi.Vec3(0.00, 0.0, 0),  # 5cm above the link
-            #     r=gymapi.Quat.from_euler_zyx(0, -1.57, 0)  # tilt downward 90°
-            # )
             cam_handle_panda=self.gym.create_camera_sensor(env_ptr,cam_props)
-            # self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,gymapi.Transform(),gymapi.FOLLOW_TRANSFORM)
             self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,offset,gymapi.FOLLOW_TRANSFORM)
             env_cameras["panda"]=cam_handle_panda
-            # self.gym.prepare_sim(self.sim)
-            # self.gym.simulate(self.sim)
-            # self.gym.fetch_results(self.sim,True)
-            # self.gym.step_graphics(self.sim)
-            # self.gym.render_all_camera_sensors(self.sim)
-            # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_panda, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
-            # imageio.imwrite("panda_camera.png", color_image)
-            # import pdb;pdb.set_trace()
-    
-            # --- Top view (slightly shifted, higher)
+
+            # cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+            # self.gym.set_camera_location(
+            #     cam_handle_bottom, env_ptr,
+            #     gymapi.Vec3(0, -0.05 - 0.15, 0.45),  # your bottom cam pos
+            #     gymapi.Vec3(-0.01, -0.049 - 0.15, 0.8)                    # look upward-ish
+            #     # gymapi.Vec3(0, -0.05, 0.45),  # your bottom cam pos
+            #     # gymapi.Vec3(-0.1, 0, 0.8)                    # look upward-ish
+            # )
+            # env_cameras["bottom"] = cam_handle_bottom
+            
+            cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+
+            tf = gymapi.Transform()
+            tf.p = gymapi.Vec3(0.0, -0.2, 0.4)  # set your position
+
+            tf.r = gymapi.Quat(0.7071068, 0.0, 0.7071068, 0.0)   # xyzw
+
+            self.gym.set_camera_transform(cam_handle_bottom, env_ptr, tf)
+            env_cameras["bottom"] = cam_handle_bottom
             cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
             self.gym.set_camera_location(
                 cam_handle_top, env_ptr,
-                gymapi.Vec3(0.54, 0.48, 0.7),  # your top cam pos
-                gymapi.Vec3(0, 0, 0.7)                                 # look at target
+                gymapi.Vec3(0.16, 0.12, 0.8),  # your top cam pos
+                gymapi.Vec3(0, 0, 0.3)                                 # look at target
             )
             env_cameras["top"] = cam_handle_top
-            # self.gym.prepare_sim(self.sim)
-            # self.gym.simulate(self.sim)
-            # self.gym.fetch_results(self.sim,True)
-            # self.gym.step_graphics(self.sim)
-            # self.gym.render_all_camera_sensors(self.sim)
-            # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_top, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
-            # imageio.imwrite("panda_camera.png", color_image)
-            # import pdb;pdb.set_trace()
-            # --- Bottom view (angled from below)
-            cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
-            self.gym.set_camera_location(
-                cam_handle_bottom, env_ptr,
-                gymapi.Vec3(0.5 * 0.6, -0.5 * 0.6, 0.7),  # your bottom cam pos
-                gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
-            )
-            env_cameras["bottom"] = cam_handle_bottom
-            # import pdb;pdb.set_trace()
-            # cam_pose_top=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_top)
-            # cam_pose_bottom=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_bottom)
-            # cam_pose_top_R=quat_to_matrix(cam_pose_top.r)
-            # cam_pose_bottom_R=quat_to_matrix(cam_pose_bottom.r)
-            # # Save both for this env
             self.camera_handles.append(env_cameras)
+
+    # def add_cameras(self):
+    #     self.camera_handles = []
+    #     # Shared base properties
+    #     cam_props = gymapi.CameraProperties()
+    #     cam_props.width = 1280   # your new resolution
+    #     cam_props.height = 960
+    #     cam_props.enable_tensors = True
+    #     self.cam_props=cam_props
+    #     for env_ptr in self.env_ptrs:
+    #         cam_prop={}
+    #         env_cameras = {}
+    #         theta_deg = 120   # example: tilt downward 45°
+    #         theta_rad = math.radians(theta_deg) 
+    #         offset = gymapi.Transform(
+    #             p=gymapi.Vec3(0.00, 0.0, 0.0),
+    #             r=gymapi.Quat.from_euler_zyx(0, -theta_rad, 0)  # tilt downward by theta_deg
+    #         )
+    #         # offset = gymapi.Transform(
+    #         #     p=gymapi.Vec3(0.00, 0.0, 0),  # 5cm above the link
+    #         #     r=gymapi.Quat.from_euler_zyx(0, -1.57, 0)  # tilt downward 90°
+    #         # )
+    #         cam_handle_panda=self.gym.create_camera_sensor(env_ptr,cam_props)
+    #         # self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,gymapi.Transform(),gymapi.FOLLOW_TRANSFORM)
+    #         self.gym.attach_camera_to_body(cam_handle_panda,env_ptr,self.panda_camera_id,offset,gymapi.FOLLOW_TRANSFORM)
+    #         env_cameras["panda"]=cam_handle_panda
+    #         # self.gym.prepare_sim(self.sim)
+    #         # self.gym.simulate(self.sim)
+    #         # self.gym.fetch_results(self.sim,True)
+    #         # self.gym.step_graphics(self.sim)
+    #         # self.gym.render_all_camera_sensors(self.sim)
+    #         # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_panda, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
+    #         # imageio.imwrite("panda_camera.png", color_image)
+    #         # import pdb;pdb.set_trace()
+    
+    #         # --- Top view (slightly shifted, higher)
+    #         cam_handle_top = self.gym.create_camera_sensor(env_ptr, cam_props)
+    #         self.gym.set_camera_location(
+    #             cam_handle_top, env_ptr,
+    #             gymapi.Vec3(0.54, 0.48, 0.7),  # your top cam pos
+    #             gymapi.Vec3(0, 0, 0.7)                                 # look at target
+    #         )
+    #         env_cameras["top"] = cam_handle_top
+    #         # self.gym.prepare_sim(self.sim)
+    #         # self.gym.simulate(self.sim)
+    #         # self.gym.fetch_results(self.sim,True)
+    #         # self.gym.step_graphics(self.sim)
+    #         # self.gym.render_all_camera_sensors(self.sim)
+    #         # color_image = self.gym.get_camera_image(self.sim, env_ptr, cam_handle_top, gymapi.IMAGE_COLOR).reshape(480,640,4)[:,:,3]
+    #         # imageio.imwrite("panda_camera.png", color_image)
+    #         # import pdb;pdb.set_trace()
+    #         # --- Bottom view (angled from below)
+    #         cam_handle_bottom = self.gym.create_camera_sensor(env_ptr, cam_props)
+    #         self.gym.set_camera_location(
+    #             cam_handle_bottom, env_ptr,
+    #             gymapi.Vec3(0.5 * 0.6, -0.5 * 0.6, 0.7),  # your bottom cam pos
+    #             gymapi.Vec3(0, 0, 0.5)                    # look upward-ish
+    #         )
+    #         env_cameras["bottom"] = cam_handle_bottom
+    #         # import pdb;pdb.set_trace()
+    #         # cam_pose_top=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_top)
+    #         # cam_pose_bottom=self.gym.get_camera_transform(self.sim, env_ptr, cam_handle_bottom)
+    #         # cam_pose_top_R=quat_to_matrix(cam_pose_top.r)
+    #         # cam_pose_bottom_R=quat_to_matrix(cam_pose_bottom.r)
+    #         # # Save both for this env
+    #         self.camera_handles.append(env_cameras)
 
     def generate_env_workspaces(
         self,
@@ -1416,25 +1474,50 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         # 01053: 
         lift_height=self.disassembly_dists * 1.4
         
+
         target_gripper_pos = self.fingertip_centered_pos.clone()
         target_gripper_pos[:,2] = target_gripper_pos[:,2] + lift_height
         target_gripper_quat=self.fingertip_centered_quat.clone()
+        # First Lift Up
+        self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 80, if_log, close_gripper,log_freq=log_freq)
         photo_pos = target_gripper_pos.clone()
         photo_pos[:,0] = 0
         photo_pos[:,1] = -0.2
+        photo_pos[:,2] = 0.5
 
-        # First Go to Take a feature
-        self._move_gripper_to_eef_pose(env_ids, photo_pos, target_gripper_quat, 100, if_log=False, close_gripper=True, log_freq=5, grace = 10)
+        threshold = 0
+        height_mask = (self.plug_pos[:, 2].cpu().numpy() > threshold).reshape(-1)
+        dist_xy = torch.norm(self.plug_pos[:, :2] - self.init_plug_pos[:, :2], dim=-1)
+        distance_threshold=0.0015
+        dist_mask = (dist_xy < distance_threshold).cpu().numpy().reshape(-1)
+        
+        ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
+        # extra random yaw around z-axis
+        yaw_noise = (2 * torch.pi * torch.rand((self.num_envs,), device=self.device) - torch.pi) / 2
+
+        yaw_quat = torch.zeros((self.num_envs, 4), device=self.device)
+        yaw_quat[:, 2] = torch.sin(yaw_noise * 0.5)  # z
+        yaw_quat[:, 3] = torch.cos(yaw_noise * 0.5)  # w
+
+        # compose yaw with existing target rotation
+        ctrl_tgt_quat = torch_utils.quat_mul(yaw_quat, self.fingertip_centered_quat.clone())
+        # First Lift Up and rotate to the init state
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 200, if_log, close_gripper,log_freq=log_freq)
+
+        # Then go to take a photo
+        self._move_gripper_to_eef_pose(env_ids, photo_pos, ctrl_tgt_quat, 100, if_log=False, close_gripper=True, log_freq=5, grace = 10)
         self.init_plug_photo_rgb = self.get_wrist_camera_rgb(camera_name="bottom").copy()
         self.init_plug_photo_depth = self.get_wrist_camera_depth(camera_name="bottom").copy()
         self.init_plug_photo_top = self.get_wrist_camera_rgb(camera_name="top").copy()
-
-        self._move_gripper_to_eef_pose(env_ids, target_gripper_pos, target_gripper_quat, 100, if_log=False, close_gripper=True, log_freq=5, grace = 10)
+        # After taking plug photo, go back to init pose
+        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 100, if_log=False, close_gripper=True, log_freq=5, grace = 10)
+        # Save some debug info
         self.init_socket_photo_rgb = self.get_wrist_camera_rgb(camera_name="panda").copy()
         self.init_socket_photo_depth = self.get_wrist_camera_depth(camera_name="panda").copy()
         self.init_socket_photo_top_rgb = self.get_wrist_camera_rgb(camera_name="top").copy()
         self.init_socket_photo_top_depth = self.get_wrist_camera_depth(camera_name="top").copy()
-        # Need to save the current cam_vinv
+
+        # # Need to save the current cam_vinv
         mask_list = []
         vinv_list = []
         for env_id in range(len(self.env_ptrs)):
@@ -1449,7 +1532,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.init_mask_array = np.stack(mask_list)
         self.init_vinv_array = np.stack(vinv_list)
         self.init_point_list = []
-        workspaces = self.generate_env_workspaces(num_envs = 12, num_per_row=3, env_spacing=0.5)
+        # workspaces = self.generate_env_workspaces(num_envs = 12, num_per_row=3, env_spacing=0.5)
+        
         for env_id in range(len(self.env_ptrs)):
             points_list=[]
             try:
@@ -1498,23 +1582,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                     )
                 )])
                 fig.write_html(f"./voxel_pointcloud_init_socket_{vox_points.shape[0]}_{env_id}.html")
-        threshold = 0
-        height_mask = (self.plug_pos[:, 2].cpu().numpy() > threshold).reshape(-1)
-        dist_xy = torch.norm(self.plug_pos[:, :2] - self.init_plug_pos[:, :2], dim=-1)
-        distance_threshold=0.0015
-        dist_mask = (dist_xy < distance_threshold).cpu().numpy().reshape(-1)
-        
-        ctrl_tgt_pos=self.fingertip_centered_pos.clone() + rand_pos_offset
-        # extra random yaw around z-axis
-        yaw_noise = (2 * torch.pi * torch.rand((self.num_envs,), device=self.device) - torch.pi) / 2
 
-        yaw_quat = torch.zeros((self.num_envs, 4), device=self.device)
-        yaw_quat[:, 2] = torch.sin(yaw_noise * 0.5)  # z
-        yaw_quat[:, 3] = torch.cos(yaw_noise * 0.5)  # w
-
-        # compose yaw with existing target rotation
-        ctrl_tgt_quat = torch_utils.quat_mul(yaw_quat, self.fingertip_centered_quat.clone())
-        self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 240, if_log, close_gripper,log_freq=log_freq)
+        # self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 240, if_log, close_gripper,log_freq=log_freq)
         # print(self.plug_pos[:,2])
         # print(self.socket_pos[:, 2] + self.disassembly_dists)
         if_intersect = (self.plug_pos[:,2] < self.socket_pos[:, 2] + self.disassembly_dists).cpu().numpy()
@@ -1817,6 +1886,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                         compression_opts=4,
                         chunks=True,
                     )
+                
                 f.create_dataset("init_plug_photo_rgb", data=self.init_plug_photo_rgb[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("init_socket_photo_rgb", data=self.init_socket_photo_rgb[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("init_plug_photo_depth", data=self.init_plug_photo_depth[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
@@ -1827,8 +1897,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[:,success_env_ids_torch,...]
                 cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
                 cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
-                f.create_dataset("init_vinv_array", data=self.init_vinv_array[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
-                f.create_dataset("init_mask_array", data=self.init_mask_array[success_env_ids_torch,...].astype(np.uint8), compression="gzip", compression_opts=4, chunks=True)
+                # f.create_dataset("init_vinv_array", data=self.init_vinv_array[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
+                # f.create_dataset("init_mask_array", data=self.init_mask_array[success_env_ids_torch,...].astype(np.uint8), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("camera3_vinv", data=cam3_vinv, compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("camera3_proj", data=cam3_proj, compression="gzip", compression_opts=4, chunks=True)
                 print("Finish Converting")

@@ -24,173 +24,27 @@ def read_from_hdf5(filename):
     data = {}
     with h5py.File(filename, "r") as f:
         # for key in ["mask"]:
-        for key in ["fingertip_centered_pos", "fingertip_centered_quat", "actions", "init_plug_pos", "plug_pos", "init_plug_quat", "plug_quat", "camera3_vinv", "camera3_proj", "force", "init_socket_photo_depth", "init_socket_photo_rgb", "mask", "init_socket_photo_top", "init_plug_photo_top", "init_plug_photo_rgb", "init_plug_photo_depth"]:
+        for key in ["fingertip_centered_pos", "fingertip_centered_quat", "actions", "init_plug_pos", "plug_pos", "init_plug_quat", "plug_quat", "camera3_vinv", "camera3_proj", "force", "init_socket_photo_depth", "init_socket_photo_rgb", "init_socket_photo_top_rgb", "init_socket_photo_top_depth", "init_plug_photo_top", "init_plug_photo_rgb", "init_plug_photo_depth", "init_vinv_array", "init_mask_array"]:
             try:
                 data[key] = f[key][()]   # load as numpy array
             except Exception as e:
                 print(f"Could not read {key}: {e}, filename: {filename}")
+        try:
+            grp = f["init_point_list"]
+
+            point_list = []
+            # sort to keep order consistent
+            for subkey in sorted(grp.keys()):
+                point_list.append(grp[subkey][()])  # each is (N, D)
+
+            data["init_point_list"] = point_list
+
+        except Exception as e:
+            print(f"Could not read init_point_list: {e}, filename: {filename}")
     return data
 
 
 import torch
-
-import torch.nn.functional as F
-
-def depth_to_pointcloud_with_rgb(
-    depth,
-    rgb,
-    cam_vinv,
-    cam_proj,
-    mask=None,       # Added mask argument
-    depth_bar=10.0,
-    device="cuda",
-):
-    # ... (Existing tensor conversion code) ...
-    depth = torch.tensor(depth, dtype=torch.float32, device=device)
-    rgb = torch.tensor(rgb, dtype=torch.float32, device=device) / 255.0
-    cam_vinv = torch.tensor(cam_vinv, dtype=torch.float32, device=device)
-    cam_proj = torch.tensor(cam_proj, dtype=torch.float32, device=device)
-
-    H, W = depth.shape
-
-    # 1. Handle Masking and Surroundings
-    if mask is not None:
-        mask_t = torch.tensor(mask, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
-        
-        # Dilation: Expand the mask by ~50 pixels to include the surrounding table
-        # kernel_size controls how much of the "surroundings" you see
-        kernel_size = 51 
-        padding = kernel_size // 2
-        dilated_mask = F.max_pool2d(mask_t, kernel_size=kernel_size, stride=1, padding=padding)
-        valid_mask = dilated_mask.squeeze() > 0
-    else:
-        valid_mask = torch.ones_like(depth, dtype=torch.bool)
-
-    # 2. Meshgrid
-    v, u = torch.meshgrid(
-        torch.arange(H, device=device, dtype=torch.float32),
-        torch.arange(W, device=device, dtype=torch.float32),
-        indexing="ij"
-    )
-    # 3. Intrinsics and Camera Coords
-    fu = 2.0 / cam_proj[0, 0]
-    fv = 2.0 / cam_proj[1, 1]
-    centerU, centerV = W / 2.0, H / 2.0
-
-    Z = depth
-    X = -(u - centerU) / W * Z * fu
-    Y =  (v - centerV) / H * Z * fv
-
-    # 4. Apply combined Mask (Depth + Socket Mask)
-    # This filters out the background/faraway points early
-    valid = (Z > -depth_bar) & valid_mask
-
-    X = X[valid]
-    Y = Y[valid]
-    Z = Z[valid]
-    rgb = rgb.reshape(-1, 3)[valid.reshape(-1)]
-
-    # 5. Transform to World
-    ones = torch.ones_like(X)
-    position = torch.stack([X, Y, Z, ones], dim=1)
-    position_world = position @ cam_vinv
-    points = position_world[:, :3]
-
-    return points, rgb
-
-def render_custom_view(points, colors, H, W, fov_deg=60, device="cuda"):
-    """
-    Render point cloud with:
-    - Image right = World +Y
-    - Image up = World -X  
-    - Camera looks toward World -Z
-    """
-    import torch
-    import numpy as np
-    
-    # Convert to tensors
-    points = torch.tensor(points, dtype=torch.float32, device=device)
-    colors = torch.tensor(colors, dtype=torch.float32, device=device)
-    
-    # 1. Build camera-to-world matrix (cam_vinv)
-    # This matrix transforms points from camera space to world space
-    cam_vinv = torch.eye(4, device=device)
-    
-    # Camera axes in world coordinates
-    right_world = torch.tensor([0.0, 1.0, 0.0], device=device)   # +Y
-    up_world = torch.tensor([-1.0, 0.0, 0.0], device=device)     # -X
-    forward_world = torch.tensor([0.0, 0.0, -1.0], device=device) # -Z
-    
-    # Normalize
-    right_world = right_world / torch.norm(right_world)
-    up_world = up_world / torch.norm(up_world)
-    forward_world = forward_world / torch.norm(forward_world)
-    
-    # Set rotation (camera axes in world coordinates)
-    cam_vinv[0, :3] = right_world   # Camera X axis (right) in world
-    cam_vinv[1, :3] = up_world      # Camera Y axis (up) in world
-    cam_vinv[2, :3] = forward_world # Camera Z axis (forward) in world
-    
-    # Set camera position (where to place the camera)
-    # Let's place it at (0, 0, 5) looking at origin
-    camera_pos = torch.tensor([0.0, 0.0, 5.0], device=device)
-    cam_vinv[:3, 3] = camera_pos
-    
-    # 2. Build projection matrix
-    aspect = W / H
-    fov_rad = torch.tensor(fov_deg * np.pi / 180.0, device=device)
-    f = 1.0 / torch.tan(fov_rad / 2.0)
-    
-    cam_proj = torch.zeros(4, 4, device=device)
-    cam_proj[0, 0] = f / aspect
-    cam_proj[1, 1] = f
-    cam_proj[2, 2] = -1.0  # Different sign for OpenGL style
-    cam_proj[2, 3] = -0.1  # Near plane
-    cam_proj[3, 2] = -1.0
-    
-    # 3. Transform points: world -> camera
-    ones = torch.ones(points.shape[0], 1, device=device)
-    points_world_h = torch.cat([points, ones], dim=1)
-    
-    # Inverse of cam_vinv (world to camera)
-    cam_vinv_inv = torch.inverse(cam_vinv)
-    points_cam_h = points_world_h @ cam_vinv_inv
-    
-    # 4. Project to NDC
-    points_ndc = points_cam_h @ cam_proj
-    
-    # 5. Convert to pixel coordinates
-    u = (points_ndc[:, 0] / points_ndc[:, 3] + 1.0) * 0.5 * W
-    v = (points_ndc[:, 1] / points_ndc[:, 3] + 1.0) * 0.5 * H
-    Z = points_cam_h[:, 2]
-    
-    # 6. Filter valid points
-    valid = (Z > 0) & (Z < 10.0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    
-    if valid.sum() == 0:
-        print("No valid points!")
-        return None, None, None
-    
-    u = u[valid].round().long()
-    v = v[valid].round().long()
-    Z = Z[valid]
-    colors = colors[valid]
-    
-    # 7. Render with z-buffer
-    depth_img = torch.full((H, W), 10.0, device=device)
-    rgb_img = torch.zeros(H, W, 3, device=device)
-    mask_img = torch.zeros(H, W, dtype=torch.bool, device=device)
-    
-    for i in range(len(u)):
-        vi, ui = v[i], u[i]
-        if Z[i] < depth_img[vi, ui]:  # Keep closest
-            depth_img[vi, ui] = Z[i]
-            rgb_img[vi, ui] = colors[i]
-            mask_img[vi, ui] = True
-    
-    return depth_img, rgb_img, mask_img
-
-
 
 def save_depth_visualization(depth_array, save_path):
     if hasattr(depth_array, "detach"):
@@ -348,6 +202,193 @@ import torch
 import numpy as np
 
 
+# @torch.jit.script
+def depth_image_to_point_cloud_GPU(camera_tensor: torch.Tensor,
+                                   colors: torch.Tensor,
+                                   camera_view_matrix_inv: torch.Tensor,
+                                   camera_proj_matrix: torch.Tensor,
+                                   u: torch.Tensor,
+                                   v: torch.Tensor,
+                                   width: float,
+                                   height: float,
+                                   depth_bar: float,
+                                   device: torch.device,
+                                   mask: torch.Tensor = None
+                                   ) -> torch.Tensor:
+    # Depth and intrinsics
+    depth_buffer = camera_tensor.to(device)
+    vinv = camera_view_matrix_inv
+    proj = camera_proj_matrix
+    fu = 2.0 / proj[0, 0]
+    fv = 2.0 / proj[1, 1]
+
+    centerU = width / 2.0
+    centerV = height / 2.0
+    # Project into 3D
+    Z = depth_buffer
+    X = -(u - centerU) / width * Z * fu
+    Y =  (v - centerV) / height * Z * fv
+
+    # Flatten
+    Z = Z.reshape(-1)
+    X = X.reshape(-1)
+    Y = Y.reshape(-1)
+
+    # Flatten colors (H, W, 3) -> (N, 3)
+    colors = colors.reshape(-1, 3)
+
+    # Mask valid points
+    valid = Z > -depth_bar
+        # Apply mask
+    if mask is not None:
+        mask = mask.reshape(-1).to(torch.bool)
+        valid = valid & mask
+    X = X[valid]
+    Y = Y[valid]
+    Z = Z[valid]
+    colors = colors[valid]
+
+    # Homogeneous coords
+    position = torch.vstack((X, Y, Z, torch.ones(len(X), device=device))).permute(1, 0)
+    position = position @ vinv
+    points = position[:, 0:3]  # (N, 3)
+
+    # Concatenate with colors -> (N, 6)
+    points_rgb = torch.cat((points, colors), dim=1)
+    return points_rgb
+
+def filter_workspace(points: torch.Tensor,
+                     x_range: tuple,
+                     y_range: tuple,
+                     z_range: tuple) -> torch.Tensor:
+    """
+    Filter points within a 3D workspace box.
+
+    Args:
+        points: (N, 3) torch.Tensor, world coordinates
+        x_range: (min_x, max_x)
+        y_range: (min_y, max_y)
+        z_range: (min_z, max_z)
+
+    Returns:
+        filtered_points: (M, 3) torch.Tensor
+    """
+    mask = (
+        (points[:, 0] >= x_range[0]) & (points[:, 0] <= x_range[1]) &
+        (points[:, 1] >= y_range[0]) & (points[:, 1] <= y_range[1]) &
+        (points[:, 2] >= z_range[0]) & (points[:, 2] <= z_range[1])
+    )
+    return points[mask]
+
+def quat_xyzw_to_matrix(quat):
+    """
+    quat: (..., 4) in (x, y, z, w) order
+    returns: (..., 3, 3)
+    """
+    if not torch.is_tensor(quat):
+        quat = torch.tensor(quat, dtype=torch.float32)
+    else:
+        quat = quat.float()
+
+    x, y, z, w = quat.unbind(-1)
+
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    ww = w * w
+
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    xw = x * w
+    yw = y * w
+    zw = z * w
+
+    R = torch.stack([
+        ww + xx - yy - zz,  2 * (xy - zw),      2 * (xz + yw),
+        2 * (xy + zw),      ww - xx + yy - zz,  2 * (yz - xw),
+        2 * (xz - yw),      2 * (yz + xw),      ww - xx - yy + zz
+    ], dim=-1).reshape(quat.shape[:-1] + (3, 3))
+
+    return R
+
+def get_inverse_relative_rotation(q_init, q_final):
+    """
+    q_init, q_final: (4,) quaternions in (x, y, z, w)
+    returns:
+        R_rel: init -> final rotation
+        R_inv: inverse rotation to apply to socket
+    """
+    R_init = quat_xyzw_to_matrix(q_init)   # (3, 3)
+    R_final = quat_xyzw_to_matrix(q_final) # (3, 3)
+
+    R_rel = R_final @ R_init.T
+    R_inv = R_rel.T
+    return R_rel, R_inv
+
+def rotate_pointcloud(points, R, center=None):
+    """
+    points: (N, 3)
+    R: (3, 3)
+    center: (3,) rotation center. If None, use centroid.
+
+    returns:
+        rotated_points: (N, 3)
+    """
+    if not torch.is_tensor(points):
+        points = torch.tensor(points, dtype=torch.float32)
+    else:
+        points = points.float()
+
+    if not torch.is_tensor(R):
+        R = torch.tensor(R, dtype=torch.float32)
+    else:
+        R = R.float()
+
+    if center is None:
+        center = points.mean(dim=0)
+    else:
+        if not torch.is_tensor(center):
+            center = torch.tensor(center, dtype=torch.float32)
+        else:
+            center = center.float()
+
+    points_centered = points - center[None, :]
+    rotated = points_centered @ R.T
+    rotated = rotated + center[None, :]
+    return rotated
+
+def extract_yaw_from_rotation_matrix(R):
+    """
+    R: (3, 3)
+    returns yaw angle in radians
+    Assumes yaw around world Z.
+    """
+    yaw = torch.atan2(R[1, 0], R[0, 0])
+    return yaw
+
+
+def yaw_matrix(theta):
+    c = torch.cos(theta)
+    s = torch.sin(theta)
+    R = torch.tensor([
+        [c, -s, 0.0],
+        [s,  c, 0.0],
+        [0.0, 0.0, 1.0]
+    ], dtype=torch.float32, device=theta.device if torch.is_tensor(theta) else None)
+    return R
+
+def get_inverse_yaw_only_rotation(q_init, q_final):
+    R_init = quat_xyzw_to_matrix(q_init)
+    R_final = quat_xyzw_to_matrix(q_final)
+
+    R_rel = R_final @ R_init.T
+    yaw = extract_yaw_from_rotation_matrix(R_rel)
+
+    R_yaw = yaw_matrix(yaw)
+    R_inv = R_yaw.T
+    return R_yaw, R_inv, yaw
+
 if __name__=="__main__":
     train_tasks = [
        "40009"
@@ -364,69 +405,61 @@ if __name__=="__main__":
             env_id = 1
             depth = data["init_socket_photo_depth"][env_id]   # (960, 1280)
             rgb = data["init_socket_photo_rgb"][env_id]       # (960, 1280, 3)
-            cam_vinv = data["camera3_vinv"][0][env_id]        # (4, 4) # 350 12 4 4
             cam_proj = data["camera3_proj"][0][env_id]        # (4, 4) # 350 12 4 4
-            mask = data["mask"][0][env_id]                       #  uint8 (960, 1280) # 350 12 960 1280
+            cam_proj = torch.from_numpy(cam_proj).float().to("cuda")
             orig_rgb_path = f"./task_{task_id}_traj_{hdf_id}_orig_rgb.png"
-            save_rgb_image(data["init_socket_photo_rgb"][env_id]  , orig_rgb_path)
-            orig_rgb_path= f"./task_{task_id}_traj_{hdf_id}_orig_rgb_socket_top.png"
-            save_rgb_image(data["init_socket_photo_top"][env_id]  , orig_rgb_path)
-            orig_rgb_path= f"./task_{task_id}_traj_{hdf_id}_orig_rgb_plug_top.png"
-            save_rgb_image(data["init_plug_photo_top"][env_id]  , orig_rgb_path)
-            orig_rgb_path= f"./task_{task_id}_traj_{hdf_id}_orig_rgb_plug_bottom.png"
-            save_rgb_image(data["init_plug_photo_rgb"][env_id]  , orig_rgb_path)
-            orig_depth_path= f"./task_{task_id}_traj_{hdf_id}_orig_depth_plug_bottom.png"
-            save_depth_visualization(data["init_plug_photo_depth"][env_id]  , orig_depth_path)
-            points, colors = depth_to_pointcloud_with_rgb(
-                depth,
-                rgb,
-                cam_vinv,
-                cam_proj,
-                mask=mask, # Pass the mask here
-                depth_bar=10.0,
-                device="cuda"
-            )
-
+            save_rgb_image(rgb, orig_rgb_path)
+            save_rgb_image(data["init_socket_photo_top_rgb"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_top_rgb.png")
+            save_rgb_image(data["init_plug_photo_rgb"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_plug_rgb.png")
+            save_depth_visualization(data["init_plug_photo_depth"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_plug_depth.png")
+            points = data["init_point_list"][env_id]   # list of (N, D), D>=6, last 3 are RGB
             # point cloud html
             save_path = f"./task_{task_id}_traj_{hdf_id}.html"
             visualize_pointcloud_plotly(
-                points,
-                colors,
+                points = points[:,:3],
+                colors = points[:,3:],
                 max_points=150000,
                 save_path=save_path
             )
-            torch.save({
-                "points": points,
-                "colors": colors
-            }, f"./pointcloud.pth")
-            rgb_img, depth_img = render_top_down_custom(points, colors, H=960, W=1280, camera_height_offset=0.08, fov_deg=30, brightness_scale=2, point_radius=3)
-            if rgb_img is not None:
-                # Convert to numpy and save
-                rgb_np = (rgb_img.cpu().numpy() * 255).astype(np.uint8)
-                
-                # Save RGB image
-                Image.fromarray(rgb_np).save("socket_top_down.png")
-                print("\n✓ Saved: socket_top_down.png")
-                
-                # Also save depth visualization
-                depth_np = depth_img.cpu().numpy()
-                depth_normalized = (depth_np / depth_np.max() * 255).astype(np.uint8)
-                Image.fromarray(depth_normalized).save("socket_top_down_depth.png")
-                print("✓ Saved: socket_top_down_depth.png")
-                
-                # Print some debug info
-                print("\nDebug Info:")
-                print(f"  Image size: {rgb_np.shape}")
-                print(f"  Non-black pixels: {(rgb_np.sum(axis=2) > 0).sum()}")
-                
-                # Check colors at specific pixels (center, edges)
-                center_u, center_v = 320, 240
-                print(f"\n  Color at center (u={center_u}, v={center_v}): {rgb_np[center_v, center_u]}")
-                
-                # Expected: Center x≈1, y≈0 should have red≈0.5, blue≈0.5
-                print("  Expected center: red~128, blue~128 (since x=1→red=0.5, y=0→blue=0.5)")
-                
-            else:
-                print("Failed to render!")
+            points=torch.from_numpy(points).float().to("cpu")
+            q_init = data["fingertip_centered_quat"][env_id,0]
+            for t in range(1, data["fingertip_centered_quat"].shape[1]):
+                print(t)
+                q_final = data["fingertip_centered_quat"][env_id,t]
+                R_rel, R_inv = get_inverse_relative_rotation(q_init,q_final)
+                # choose rotation center
+                socket_center = points[:,:3].mean(dim=0)
+
+                # rotate socket opposite to gripper motion
+                rotated_socket_points = rotate_pointcloud(points[:,:3], R_inv, center=socket_center)
+                rgb_img, depth_img = render_top_down_custom(rotated_socket_points, points[:,3:], H=960, W=1280, camera_height_offset=0.08, fov_deg=30, brightness_scale=2, point_radius=3)
+                if rgb_img is not None:
+                    # Convert to numpy and save
+                    rgb_np = (rgb_img.cpu().numpy() * 255).astype(np.uint8)
+                    
+                    # Save RGB image
+                    Image.fromarray(rgb_np).save(f"rotated_socket/socket_top_down_{t}.png")
+                    print(f"\n✓ Saved: rotated_socket/socket_top_down_{t}.png")
+                    
+                    # Also save depth visualization
+                    depth_np = depth_img.cpu().numpy()
+                    depth_normalized = (depth_np / depth_np.max() * 255).astype(np.uint8)
+                    Image.fromarray(depth_normalized).save(f"rotated_socket_depth/socket_top_down_depth_{t}.png")
+                    print(f"✓ Saved: rotated_socket/socket_top_down_depth_{t}.png")
+                    
+                    # Print some debug info
+                    print("\nDebug Info:")
+                    print(f"  Image size: {rgb_np.shape}")
+                    print(f"  Non-black pixels: {(rgb_np.sum(axis=2) > 0).sum()}")
+                    
+                    # Check colors at specific pixels (center, edges)
+                    center_u, center_v = 320, 240
+                    print(f"\n  Color at center (u={center_u}, v={center_v}): {rgb_np[center_v, center_u]}")
+                    
+                    # Expected: Center x≈1, y≈0 should have red≈0.5, blue≈0.5
+                    print("  Expected center: red~128, blue~128 (since x=1→red=0.5, y=0→blue=0.5)")
+                    
+                else:
+                    print("Failed to render!")
 
             os._exit(0)
