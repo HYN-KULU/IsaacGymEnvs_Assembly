@@ -206,7 +206,7 @@ def run_env(cfg: DictConfig):
     envs.reset_idx(env_ids)
     for run_seed in range(6):
         envs.run_id = run_seed
-        envs.visualize_rgb = True
+        envs.visualize_rgb = False
         envs.reset_idx(env_ids)
         init_plug_pos = envs.init_root_pose[:, :3].clone()
         init_plug_quat = envs.init_root_pose[:, 3:7].clone()
@@ -229,13 +229,7 @@ def run_env(cfg: DictConfig):
         target_plug_quat = init_plug_quat.clone()
         # 4. Apply to your offset
         offset[:, :2] = magnitudes * signs
-        target_plug_quat_disturbed, yaw_deg = disturb_quat_in_yaw(
-            target_plug_quat,
-            deg_min=5.0,
-            deg_max=20.0,
-            both_directions=True,
-            world_frame=True,
-        )
+
         nums = random.sample(range(200), 50)
         action_list=[]
         depth_list=[]
@@ -243,13 +237,30 @@ def run_env(cfg: DictConfig):
             recovery = False
         else:
             recovery = True
+        if run_seed in [4,5]:
+            hard_recovery = True
+            min_angle_error = 91
+            max_angle_error = 179
+        else:
+            hard_recovery = False
+            min_angle_error = 5
+            max_angle_error = 90
         if recovery:
             disturb_steps = 200
-            steps = 350
+            if hard_recovery:
+                steps = 600
+            else:
+                steps = 500
         else:
-            steps = 250
+            steps = 350
+        target_plug_quat_disturbed, yaw_deg = disturb_quat_in_yaw(
+            target_plug_quat,
+            deg_min=min_angle_error,
+            deg_max=max_angle_error,
+            both_directions=True,
+            world_frame=True,
+        )
         ###
-        steps = 30
         force_traj = None
         recovery_steps_after_spike = 10
         recovery_counter = np.zeros(num_envs, dtype=np.int32)
@@ -286,18 +297,20 @@ def run_env(cfg: DictConfig):
             next_tgt_quat=envs.fingertip_centered_quat.clone()
             previous_tgt_quat = next_tgt_quat.clone()
             previous_tgt_pos = envs.fingertip_centered_pos.clone()
-            log_step = True
-            if i > 1:
-                delta = force_traj[-1] - force_traj[0]
-                vals = delta[:, 0, 2]
-                idx = np.where(vals > 0.05)[0]
-                if len(idx) > 0:
-                    recovery_counter[idx] = recovery_steps_after_spike
-            recovering_idx = np.where(recovery_counter > 0)[0]
-            recovery_counter[recovering_idx] -= 1
-            vals = torch.tensor([0.0, 1e-4, 2e-4], device=action.device)
-            rand_idx = torch.randint(0, 3, (len(recovering_idx),), device=action.device)
-            action[recovering_idx, 2] = vals[rand_idx]
+            # log_step = True
+            # if i > 1:
+            #     delta = force_traj[-1] - force_traj[0]
+            #     vals = delta[:, 0, 2]
+            #     idx = np.where(vals > 0.05)[0]
+            #     if len(idx) > 0:
+            #         recovery_counter[idx] = recovery_steps_after_spike
+            # recovering_idx = np.where(recovery_counter > 0)[0]
+            # recovery_counter[recovering_idx] -= 1
+            # # print(recovering_idx)
+            # vals = torch.tensor([0.0, 1e-4, 2e-4], device=action.device)
+            # rand_idx = torch.randint(0, 3, (len(recovering_idx),), device=action.device)
+            # action[recovering_idx, 2] = vals[rand_idx]
+            # print(action[4])
             next_tgt_pos= previous_tgt_pos + action
             if i > 50:
                 q_step, angle_err = quat_step_toward(
@@ -374,16 +387,15 @@ def run_env(cfg: DictConfig):
         force_array = force_traj
         # Success Checker
         action_array=np.stack(action_list)
-        # if run_seed in [0,3]:
-        if True:
-            folder = "rollout_orient"
-            for env_id in range(6):
-                    folder= "rollout_orient"
-                    if recovery:
-                        folder = "rollout_recovery"
-                    envs.save_first_env_images(out_dir=f"{folder}/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
+        # if True:
+        #     folder = "rollout_orient"
+        #     for env_id in range(12):
+        #             folder= "rollout_orient"
+        #             if recovery:
+        #                 folder = "rollout_recovery"
+        #             envs.save_first_env_images(out_dir=f"{folder}/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
         success_env_ids_np = envs.success_env_ids.detach().cpu().numpy().astype(np.int64)
-        # envs._save_log_traj(action_array[:,success_env_ids_np,:], force_array[:,success_env_ids_np,:,:])  
+        envs._save_log_traj(action_array[:,success_env_ids_np,:], force_array[:,success_env_ids_np,:,:])  
 
 
     os._exit(0)

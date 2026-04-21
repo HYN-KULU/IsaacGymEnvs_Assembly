@@ -9,9 +9,8 @@ from copy import deepcopy
 from easydict import EasyDict as edict
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from dataset.diffusion_policy_dataset import DepthActionDataset
-from policy.diffusion_policy import Diffusion_Policy   # the class we wrote
-#from policy.diffusion_policy_flow_debug import Diffusion_Policy
+from dataset.force_diffusion_policy_image_condition import DepthActionDataset
+from policy.force_diffusion_policy_image_condition import Diffusion_Policy   # the class we wrote
 from diffusion_utils.training import set_seed, plot_history, sync_loss   # keep your helpers
 
 
@@ -134,8 +133,10 @@ def train(args_override):
             depth = batch["depth"].to(device)               # (B, 1, H, W)
             proprio = batch["proprioception"].to(device)    # (B, 9)
             actions = batch["actions"].to(device)           # (B, K, 9)
-
-            loss = policy(depth=depth, proprioception=proprio, actions=actions)
+            forces = batch["force"].to(device)             # (B, K, 3)
+            socket_depth = batch["socket_depth"].to(device) # (B, H, W)
+            init_plug_photo_depth = batch["init_plug_photo_depth"].to(device) #
+            loss = policy(depth=depth, proprioception=proprio, actions=actions, force=forces, socket_depth=socket_depth, init_plug_photo_depth=init_plug_photo_depth)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
