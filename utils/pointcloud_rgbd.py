@@ -356,8 +356,6 @@ def render_top_down_custom(
                     rgb_img[vv, uu] = ci
 
     filled = (depth_img < far).sum().item()
-    print(f"Projected points: {len(u)}")
-    print(f"Filled pixels: {filled} / {H * W} ({100.0 * filled / (H * W):.2f}%)")
 
     if filled > 0:
         rendered_colors = rgb_img[depth_img < far]

@@ -24,18 +24,16 @@ def read_from_hdf5(filename):
     data = {}
     with h5py.File(filename, "r") as f:
         # for key in ["mask"]:
-        for key in ["fingertip_centered_pos", "fingertip_centered_quat", "actions", "init_plug_pos", "plug_pos", "init_plug_quat", "plug_quat", "camera3_vinv", "camera3_proj", "force", "init_socket_photo_depth", "init_socket_photo_rgb", "init_socket_photo_top_rgb", "init_socket_photo_top_depth", "init_plug_photo_top", "init_plug_photo_rgb", "init_plug_photo_depth", "init_vinv_array", "init_mask_array"]:
+        for key in ["fingertip_centered_pos", "fingertip_centered_quat", "actions", "init_plug_pos", "plug_pos", "init_plug_quat", "plug_quat", "camera3_vinv", "camera3_proj", "force", "init_socket_photo_depth", "init_socket_photo_rgb", "init_socket_photo_top_rgb", "init_socket_photo_top_depth", "init_plug_photo_top", "init_plug_photo_rgb", "init_plug_photo_depth", ]:
             try:
                 data[key] = f[key][()]   # load as numpy array
             except Exception as e:
                 print(f"Could not read {key}: {e}, filename: {filename}")
         try:
             grp = f["init_point_list"]
-
             point_list = []
-            # sort to keep order consistent
-            for subkey in sorted(grp.keys()):
-                point_list.append(grp[subkey][()])  # each is (N, D)
+            for idx in range(len(grp.keys())):
+                point_list.append(grp[f"{idx}"][()])  # each is (N, D)
 
             data["init_point_list"] = point_list
 
@@ -389,6 +387,98 @@ def get_inverse_yaw_only_rotation(q_init, q_final):
     R_inv = R_yaw.T
     return R_yaw, R_inv, yaw
 
+def quat_xyzw_to_yaw(q):
+    x, y, z, w = q
+    return np.arctan2(
+        2*(w*z + x*y),
+        1 - 2*(y*y + z*z)
+    )
+
+def relative_yaw_from_quats(q_init, q_final):
+    yaw_init = quat_xyzw_to_yaw(q_init)
+    yaw_final = quat_xyzw_to_yaw(q_final)
+    delta = yaw_final - yaw_init
+    return np.arctan2(np.sin(delta), np.cos(delta))
+import cv2
+
+def rotate_image(image, angle_deg, interp=cv2.INTER_LINEAR, border_value=0):
+    """
+    image: HxW or HxWxC, numpy array or torch tensor
+    angle_deg: positive means CCW in OpenCV
+    """
+    if torch.is_tensor(image):
+        image = image.detach().cpu().numpy()
+
+    image = np.asarray(image)
+
+    h, w = image.shape[:2]
+    center = (w / 2.0, h / 2.0)
+
+    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+    rotated = cv2.warpAffine(
+        image,
+        M,
+        (w, h),
+        flags=interp,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=border_value,
+    )
+    return rotated
+
+def rotate_socket_image_opposite_gripper(
+    init_socket_img,
+    gripper_init_quat,
+    gripper_final_quat,
+):
+    delta_yaw = relative_yaw_from_quats(gripper_init_quat, gripper_final_quat)
+    delta_yaw_deg = float(delta_yaw * 180.0 / np.pi)
+    print(f"Rotating socket image by {-delta_yaw_deg:.2f} degrees to compensate for gripper yaw change of {delta_yaw_deg:.2f} degrees")
+    if torch.is_tensor(init_socket_img):
+        init_socket_img = init_socket_img.detach().cpu().numpy()
+
+    init_socket_img = np.asarray(init_socket_img)
+
+    rotated_img = rotate_image(init_socket_img, -delta_yaw_deg)
+
+    return rotated_img, delta_yaw_deg
+
+def rotate_socket_depth_opposite_gripper(
+    init_socket_depth,
+    gripper_init_quat,
+    gripper_final_quat,
+    invalid_val=0.0,
+):
+    """
+    init_socket_depth: (H, W) numpy array or torch tensor
+    quats: (x, y, z, w)
+
+    Returns:
+        rotated_depth, delta_yaw_deg
+    """
+    delta_yaw = relative_yaw_from_quats(gripper_init_quat, gripper_final_quat)
+    delta_yaw_deg = float(delta_yaw * 180.0 / np.pi)
+
+    if torch.is_tensor(init_socket_depth):
+        init_socket_depth = init_socket_depth.detach().cpu().numpy()
+
+    init_socket_depth = np.asarray(init_socket_depth, dtype=np.float32)
+
+    h, w = init_socket_depth.shape
+    center = (w / 2.0, h / 2.0)
+
+    M = cv2.getRotationMatrix2D(center, -delta_yaw_deg, 1.0)
+
+    rotated_depth = cv2.warpAffine(
+        init_socket_depth,
+        M,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=float(invalid_val),
+    )
+
+    return rotated_depth, delta_yaw_deg
+
 if __name__=="__main__":
     train_tasks = [
        "40009"
@@ -400,7 +490,7 @@ if __name__=="__main__":
     for task_id in train_tasks:
         for hdf_id in range(6):
             data = read_from_hdf5(
-                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo_debug/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
+                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
             )
             env_id = 1
             depth = data["init_socket_photo_depth"][env_id]   # (960, 1280)
@@ -411,6 +501,7 @@ if __name__=="__main__":
             save_rgb_image(rgb, orig_rgb_path)
             save_rgb_image(data["init_socket_photo_top_rgb"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_top_rgb.png")
             save_rgb_image(data["init_plug_photo_rgb"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_plug_rgb.png")
+            save_rgb_image(np.flipud(data["init_plug_photo_rgb"][env_id]), f"./task_{task_id}_traj_{hdf_id}_orig_plug_rgb_flipped.png")
             save_depth_visualization(data["init_plug_photo_depth"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_plug_depth.png")
             points = data["init_point_list"][env_id]   # list of (N, D), D>=6, last 3 are RGB
             # point cloud html
@@ -423,41 +514,28 @@ if __name__=="__main__":
             )
             points=torch.from_numpy(points).float().to("cpu")
             q_init = data["fingertip_centered_quat"][env_id,0]
-            for t in range(1, data["fingertip_centered_quat"].shape[1]):
-                print(t)
-                q_final = data["fingertip_centered_quat"][env_id,t]
-                R_rel, R_inv = get_inverse_relative_rotation(q_init,q_final)
-                # choose rotation center
-                socket_center = points[:,:3].mean(dim=0)
-
-                # rotate socket opposite to gripper motion
-                rotated_socket_points = rotate_pointcloud(points[:,:3], R_inv, center=socket_center)
-                rgb_img, depth_img = render_top_down_custom(rotated_socket_points, points[:,3:], H=960, W=1280, camera_height_offset=0.08, fov_deg=30, brightness_scale=2, point_radius=3)
+            rgb_init, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H=960, W=1280, camera_height_offset=0.08, fov_deg=30, point_radius=3)
+            for t in [0,-1]:
+                if t ==0:
+                    rgb_img = rgb_init.clone().detach().cpu().numpy()
+                    depth_img = depth_init.clone().detach().cpu().numpy()
+                else:
+                    q_final = data["fingertip_centered_quat"][env_id,-1]
+                    # import pdb;pdb.set_trace()
+                    # R_yaw, R_inv, yaw = get_inverse_yaw_only_rotation(q_init, q_final)
+                    # socket_center = points[:,:3].mean(dim=0)
+                    # rotated_socket_points = rotate_pointcloud(points[:,:3], R_inv, center=socket_center)
+                    # rgb_img, depth_img = render_top_down_custom(rotated_socket_points, points[:,3:], H=960, W=1280, camera_height_offset=0.08, fov_deg=30, point_radius=3)
+                    rgb_img, _ = rotate_socket_image_opposite_gripper(rgb_init, q_init, q_final)
+                    depth_img,_ = rotate_socket_depth_opposite_gripper(depth_init, q_init, q_final, invalid_val=0.0)
                 if rgb_img is not None:
-                    # Convert to numpy and save
-                    rgb_np = (rgb_img.cpu().numpy() * 255).astype(np.uint8)
-                    
-                    # Save RGB image
-                    Image.fromarray(rgb_np).save(f"rotated_socket/socket_top_down_{t}.png")
-                    print(f"\n✓ Saved: rotated_socket/socket_top_down_{t}.png")
-                    
-                    # Also save depth visualization
-                    depth_np = depth_img.cpu().numpy()
+                    rgb_np = (rgb_img * 255).astype(np.uint8)
+                    Image.fromarray(rgb_np).save(f"rotated_socket_image/socket_top_down_{t}.png")
+                    depth_np = depth_img
                     depth_normalized = (depth_np / depth_np.max() * 255).astype(np.uint8)
-                    Image.fromarray(depth_normalized).save(f"rotated_socket_depth/socket_top_down_depth_{t}.png")
-                    print(f"✓ Saved: rotated_socket/socket_top_down_depth_{t}.png")
+                    Image.fromarray(depth_normalized).save(f"rotated_socket_depth_image/socket_top_down_depth_{t}.png")
                     
-                    # Print some debug info
-                    print("\nDebug Info:")
-                    print(f"  Image size: {rgb_np.shape}")
-                    print(f"  Non-black pixels: {(rgb_np.sum(axis=2) > 0).sum()}")
                     
-                    # Check colors at specific pixels (center, edges)
-                    center_u, center_v = 320, 240
-                    print(f"\n  Color at center (u={center_u}, v={center_v}): {rgb_np[center_v, center_u]}")
-                    
-                    # Expected: Center x≈1, y≈0 should have red≈0.5, blue≈0.5
-                    print("  Expected center: red~128, blue~128 (since x=1→red=0.5, y=0→blue=0.5)")
                     
                 else:
                     print("Failed to render!")

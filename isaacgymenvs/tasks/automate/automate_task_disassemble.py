@@ -1501,6 +1501,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
 
         # compose yaw with existing target rotation
         ctrl_tgt_quat = torch_utils.quat_mul(yaw_quat, self.fingertip_centered_quat.clone())
+        # debug
+        # ctrl_tgt_quat = self.fingertip_centered_quat.clone()
         # First Lift Up and rotate to the init state
         self._move_gripper_to_eef_pose(env_ids, ctrl_tgt_pos, ctrl_tgt_quat, 200, if_log, close_gripper,log_freq=log_freq)
 
@@ -1550,10 +1552,22 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                 v = torch.arange(0, self.cam_props.height, device=self.device)
                                 u_grid, v_grid = torch.meshgrid(u, v, indexing="xy")  # H×W grids
                                 colors = torch_cam_color_tensor[:, :, :3].to(torch.float32) / 255.0  # (H, W, 3) in [0,1]
-                                mask = torch.from_numpy(self.init_mask_array[env_id] > 0).to("cuda")
-                                points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device, mask = mask)
+                                if camera_key == "panda":
+                                    mask = torch.from_numpy(self.init_mask_array[env_id] > 0).to("cuda")
+                                    points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device, mask = mask)
+                                else:
+                                    points=depth_image_to_point_cloud_GPU_nomask(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device)
+
+                                # points=depth_image_to_point_cloud_GPU(torch_cam_tensor, colors, cam_vinv, cam_proj, u_grid, v_grid, self.cam_props.width,self.cam_props.height, 10, self.device, mask = mask)
                                 points=filter_workspace(points, (-10,10), (-10,10), (0.3,1))
-                                points_list.append(points)
+                                if camera_key == "panda":
+                                    print("Downsample wrist camera point cloud")
+                                    # points = voxel_downsample(points, 0.0001, 10000)
+                                    points = points.clone()
+                                else:
+                                    print("Downsample top camera point cloud")
+                                    points = voxel_downsample(points, 0.009, 10000)
+                                points_list.append(points.clone())
                 points=torch.concatenate(points_list,dim=0)
             except Exception as e:
                 print(f"Error processing env_id {env_id}: {e}")
@@ -1562,9 +1576,10 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 print(f"No valid points for env_id {env_id}")
                 continue
             print("before downsample: ",points.shape)
-            vox_points=voxel_downsample(points,0.0001,10000).cpu().detach().numpy()
+            # vox_points=voxel_downsample(points,0.0009,10000).cpu().detach().numpy()
+            vox_points = points.cpu().detach().numpy()
             print("after downsample: ",vox_points.shape)
-            self.init_point_list.append(vox_points)
+            self.init_point_list.append(vox_points.copy())
             x, y, z = vox_points[:, 0], vox_points[:, 1], vox_points[:, 2]
             rgb = (vox_points[:, 3:6] * 255).astype(int)
             colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
@@ -1827,7 +1842,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "flow_0416_forward_force_photo_debug", self.cfg_task.env.desired_subassemblies[0],
+                "flow_0416_forward_force_photo", self.cfg_task.env.desired_subassemblies[0],
                 f"disassembly_traj_{self.run_id}.h5"
             )
             log_dir = os.path.dirname(log_filename)
@@ -1872,20 +1887,24 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 print("Saving RGBD")
                 success_env_ids_torch = torch.as_tensor(success_env_ids, device="cpu", dtype=torch.long)
                 grp = f.create_group("init_point_list")
-
-                for i, pc in enumerate(self.init_point_list):
+                # for i, pc in enumerate(self.init_point_list):
+                pt_idx = 0
+                for i in success_env_ids:
+                    idx = i.item()
+                    pc = self.init_point_list[idx]
                     if torch.is_tensor(pc):
                         pc = pc.detach().cpu().numpy()
                     else:
                         pc = np.asarray(pc)
 
                     grp.create_dataset(
-                        f"env_{i}",
+                        f"{pt_idx}",
                         data=pc.astype(np.float32),
                         compression="gzip",
                         compression_opts=4,
                         chunks=True,
                     )
+                    pt_idx += 1
                 
                 f.create_dataset("init_plug_photo_rgb", data=self.init_plug_photo_rgb[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("init_socket_photo_rgb", data=self.init_socket_photo_rgb[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
