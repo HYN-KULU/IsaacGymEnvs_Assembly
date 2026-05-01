@@ -15,6 +15,70 @@ from data_utils.socket_image import save_depth_visualization, rotate_socket_imag
 from data_utils.pointcloud_rgbd import render_top_down_custom
 from data_utils.preprocess_data_depth_multitask_forward_image_condition import normalize_depth_for_shape
 import cv2
+
+import cv2
+import numpy as np
+
+
+def zoom_depth_center(depth, scale=1.5, invalid_fill=0.0, interpolation=cv2.INTER_NEAREST):
+    """
+    Zoom into the center of a depth image while keeping the same H, W.
+
+    scale > 1.0: zoom in
+    scale = 1.0: unchanged
+    scale < 1.0: zoom out
+    """
+    depth = np.asarray(depth)
+    H, W = depth.shape[:2]
+
+    if scale == 1.0:
+        return depth.copy()
+
+    if scale <= 0:
+        raise ValueError(f"scale must be positive, got {scale}")
+
+    if scale > 1.0:
+        # Crop the center region, then resize back to original size.
+        crop_h = int(round(H / scale))
+        crop_w = int(round(W / scale))
+
+        crop_h = max(1, min(H, crop_h))
+        crop_w = max(1, min(W, crop_w))
+
+        y0 = (H - crop_h) // 2
+        x0 = (W - crop_w) // 2
+
+        cropped = depth[y0:y0 + crop_h, x0:x0 + crop_w]
+
+        zoomed = cv2.resize(
+            cropped,
+            (W, H),
+            interpolation=interpolation,
+        )
+
+    else:
+        # Zoom out: resize smaller, then pad back to original size.
+        new_h = int(round(H * scale))
+        new_w = int(round(W * scale))
+
+        new_h = max(1, min(H, new_h))
+        new_w = max(1, min(W, new_w))
+
+        small = cv2.resize(
+            depth,
+            (new_w, new_h),
+            interpolation=interpolation,
+        )
+
+        zoomed = np.full_like(depth, invalid_fill)
+
+        y0 = (H - new_h) // 2
+        x0 = (W - new_w) // 2
+
+        zoomed[y0:y0 + new_h, x0:x0 + new_w] = small
+
+    return zoomed.astype(depth.dtype)
+
 def load_processed_dataset(filename):
     import h5py
     data = {}
@@ -132,12 +196,10 @@ def run_env(cfg: DictConfig):
         cfg.force_render,
         cfg,
     )
-    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/processed_dataset_forward_0421.h5")
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/processed_dataset_forward_0429_force_feedback.h5")
     all_actions = data['actions'][()]  # (N, K, 9)
     delta_pos = all_actions[..., 0:3]  # (N, K, 3)
     delta_rot = all_actions[...,3:]
-    # delta_pos = all_actions[..., 0:3]  # (N, K, 3)
-    # delta_rot = all_actions[...,3:]
     pos_min = torch.from_numpy(delta_pos.min(axis=(0, 1))).cuda()
     pos_max = torch.from_numpy(delta_pos.max(axis=(0, 1))).cuda()
     rot_min=torch.from_numpy(delta_rot.min(axis=(0,1))).cuda()
@@ -147,12 +209,12 @@ def run_env(cfg: DictConfig):
     force_min = np.min(data['force'][()], axis=0)
     force_max = np.max(data['force'][()], axis=0)
     ### Load Policy
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward_0421/policy_epoch_55.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward_20031_0501/policy_epoch_75.ckpt"  # or policy_last.ckpt
+    # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward_20031_0429/policy_epoch_50.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
         obs_feature_dim=512,
         hidden_dim=512,
-        proprio_dim=7,
         action_dim=9
     ).to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
@@ -160,7 +222,7 @@ def run_env(cfg: DictConfig):
     policy.eval()
     dists=[]
     env_ids=torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11], device='cuda:0')
-    for trial in range(1):
+    for trial in range(5):
         envs.visualize_rgb = True
         print("===== Trial ", trial, " =====")
         envs.reset_idx(env_ids)
@@ -175,18 +237,26 @@ def run_env(cfg: DictConfig):
         init_force_np = envs.vec_sensor_tensor.view(-1, 3, 6).detach().cpu().numpy()[:,0,:3]
         init_socket_depth_list = []
         init_plug_photo_depth_list = []
+        init_plug_photo_rgb_list = []
         init_fingertip_centered_quat_list = []
         fingertip_centered_quat=envs.fingertip_centered_quat.clone()
         for i in range(12):
             print("Init Socket & Plug Depth for Env ", i)
             points = torch.from_numpy(envs.init_point_list[i]).float().to("cpu")
-            _, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H = 480, W = 640, camera_height_offset=0.08, fov_deg =30, point_radius = 3)
+            _, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H = 480, W = 640, camera_height_offset=0.02, fov_deg = 73.73979365244269, point_radius = 5)
             init_socket_depth_list.append(depth_init)
-            init_plug_photo_depth_i = normalize_depth_for_shape(np.flipud(envs.init_plug_photo_depth[i]), invalid_fill=0.0)
+            init_plug_photo_depth_flipped_i = np.flipud(envs.init_plug_photo_depth[i]).copy()
+            distance_camera_to_plug = abs(init_plug_photo_depth_flipped_i.max())
+            scale = distance_camera_to_plug / 0.02
+            init_plug_photo_depth_i = normalize_depth_for_shape(zoom_depth_center(init_plug_photo_depth_flipped_i, scale=scale), invalid_fill=0.0)
             init_plug_photo_depth_list.append(init_plug_photo_depth_i)
+            init_plug_photo_rgb_list.append(envs.init_plug_photo_rgb[i])
             init_fingertip_centered_quat_list.append(fingertip_centered_quat[i].cpu().numpy())
         init_plug_photo_depth_tensor = torch.from_numpy(np.stack(init_plug_photo_depth_list)).float().cuda()
-        for t in range(5):
+        init_plug_photo_rgb_tensor = torch.from_numpy(np.stack(init_plug_photo_rgb_list)).float().cuda()
+        # For visualization
+        socket_depth_tensor_list = []
+        for t in range(100):
             print("Timestep: ",t)
             fingertip_centered_pos=envs.fingertip_centered_pos.clone()
             fingertip_centered_quat=envs.fingertip_centered_quat.clone()
@@ -199,6 +269,7 @@ def run_env(cfg: DictConfig):
                 socket_depth = normalize_depth_for_shape(socket_depth, invalid_fill=0.0)
                 socket_depth_list.append(socket_depth)
             socket_depth_tensor = torch.from_numpy(np.stack(socket_depth_list)).float().cuda()
+            socket_depth_tensor_list.append(socket_depth_tensor)
             ## Process the depth data
             depth = envs.get_wrist_camera_depth()
             rotated_depth_list=[]
@@ -223,7 +294,7 @@ def run_env(cfg: DictConfig):
 
             tcp=torch.concatenate([fingertip_centered_pos,fingertip_centered_quat],axis=1).cpu().numpy()
             proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")[:,:]).cuda()
-            raw_actions=policy(depth =depth_rot.unsqueeze(dim=1),proprioception = proprioception[...,2:],actions=None, force = torch.from_numpy(force_normalized).cuda(), init_plug_photo_depth = init_plug_photo_depth_tensor, socket_depth = socket_depth_tensor)
+            raw_actions=policy(depth =depth_rot.unsqueeze(dim=1),actions=None, force = torch.from_numpy(force_normalized).cuda(), init_plug_photo_depth = init_plug_photo_depth_tensor, socket_depth = socket_depth_tensor)
             predict_actions=unnormalize_actions(raw_actions,pos_min,pos_max,rot_min,rot_max)
             next_tgt_pos=envs.fingertip_centered_pos.clone()
             next_tgt_quat=envs.fingertip_centered_quat.clone()
@@ -234,13 +305,14 @@ def run_env(cfg: DictConfig):
             envs.refresh_env_tensors()
             current_gripper_pos = envs.fingertip_centered_pos.clone()
             # Add the k steps together, and launch a move
-            for i in range(10): 
+            for i in range(5): 
                 if_log = True if i==0 else False   
                 next_tgt_pos=envs.fingertip_centered_pos.clone()
                 next_tgt_quat=envs.fingertip_centered_quat.clone()
                 tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
                 proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
                 delta_pos=predict_actions[:,i,:3] 
+                delta_pos[...,2] = -0.0001 
                 camera3_vinv_torch = torch.from_numpy(camera3_vinv).to(delta_pos.device)
                 R_wc = camera3_vinv_torch[:, :3, :3] 
                 R_cw = R_wc.transpose(1, 2) 
@@ -279,9 +351,12 @@ def run_env(cfg: DictConfig):
         )
         for env_id in range(12):
             envs.save_first_env_images(out_dir=f"rollout_eval_forward_force_image/{envs.cfg_task.env.desired_subassemblies[0]}/{trial}", index=env_id, reverse=False)
-        dists.extend(dist_list)
-        np.save(f"eval_dp_forward_transform/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
-    
+        # dists.extend(dist_list)
+        # np.save(f"eval_dp_forward_transform/{envs.cfg_task.env.desired_subassemblies[0]}.npy", np.array(dists))
+        data={}
+        # data["socket_depth"] = socket_depth_tensor_list
+        # data["init_plug_photo_rgb"] = init_plug_photo_rgb_tensor
+        # torch.save(data, f"force_image_dp/visual_data.pt")
     os._exit(0)
 
 

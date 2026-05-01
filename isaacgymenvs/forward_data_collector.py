@@ -233,11 +233,11 @@ def run_env(cfg: DictConfig):
         nums = random.sample(range(200), 50)
         action_list=[]
         depth_list=[]
-        if run_seed in [0,1]:
+        if run_seed in [0,1,2]:
             recovery = False
         else:
             recovery = True
-        if run_seed in [4,5]:
+        if run_seed in [3]:
             hard_recovery = True
             min_angle_error = 91
             max_angle_error = 179
@@ -253,6 +253,7 @@ def run_env(cfg: DictConfig):
                 steps = 500
         else:
             steps = 350
+        
         target_plug_quat_disturbed, yaw_deg = disturb_quat_in_yaw(
             target_plug_quat,
             deg_min=min_angle_error,
@@ -298,18 +299,18 @@ def run_env(cfg: DictConfig):
             previous_tgt_quat = next_tgt_quat.clone()
             previous_tgt_pos = envs.fingertip_centered_pos.clone()
             # log_step = True
-            # if i > 1:
-            #     delta = force_traj[-1] - force_traj[0]
-            #     vals = delta[:, 0, 2]
-            #     idx = np.where(vals > 0.05)[0]
-            #     if len(idx) > 0:
-            #         recovery_counter[idx] = recovery_steps_after_spike
-            # recovering_idx = np.where(recovery_counter > 0)[0]
-            # recovery_counter[recovering_idx] -= 1
-            # # print(recovering_idx)
-            # vals = torch.tensor([0.0, 1e-4, 2e-4], device=action.device)
-            # rand_idx = torch.randint(0, 3, (len(recovering_idx),), device=action.device)
-            # action[recovering_idx, 2] = vals[rand_idx]
+            if i > 200:
+                delta = force_traj[-1] - force_traj[0]
+                vals = delta[:, 0, 2]
+                idx = np.where(vals > 0.05)[0]
+                if len(idx) > 0:
+                    recovery_counter[idx] = recovery_steps_after_spike
+            recovering_idx = np.where(recovery_counter > 0)[0]
+            recovery_counter[recovering_idx] -= 1
+            # print(recovering_idx)
+            vals = torch.tensor([0.0, 1e-4, 2e-4], device=action.device)
+            rand_idx = torch.randint(0, 3, (len(recovering_idx),), device=action.device)
+            action[recovering_idx, 2] = vals[rand_idx]
             # print(action[4])
             next_tgt_pos= previous_tgt_pos + action
             if i > 50:
@@ -380,7 +381,7 @@ def run_env(cfg: DictConfig):
             else:
                 # 在时间维度拼接
                 force_traj = np.concatenate([force_traj, force_np[None]], axis=0)
-        envs.success_env_ids = torch.arange(0, num_envs, device=envs.device)
+        # envs.success_env_ids = torch.arange(0, num_envs, device=envs.device)
         envs._log_robot_state(envs.success_env_ids)
         envs._log_object_state(envs.success_env_ids)
         # force_array = torch.stack(force_traj,dim=0).detach().cpu().numpy()
@@ -394,8 +395,7 @@ def run_env(cfg: DictConfig):
         #             if recovery:
         #                 folder = "rollout_recovery"
         #             envs.save_first_env_images(out_dir=f"{folder}/{envs.cfg_task.env.desired_subassemblies[0]}", index=env_id, reverse=False) 
-        success_env_ids_np = envs.success_env_ids.detach().cpu().numpy().astype(np.int64)
-        envs._save_log_traj(action_array[:,success_env_ids_np,:], force_array[:,success_env_ids_np,:,:])  
+        envs._save_log_traj(action_array[:,envs.success_env_ids,:], force_array[:,envs.success_env_ids,:,:])  
 
 
     os._exit(0)

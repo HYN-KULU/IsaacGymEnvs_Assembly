@@ -129,7 +129,7 @@ def run_env(cfg: DictConfig):
         cfg,
     )
     # data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/preprocess/processed_dataset_forward_0314.h5")
-    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/preprocess/processed_dataset_forward_0320.h5")
+    data=load_processed_dataset("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/processed_dataset_forward_0421_force_feedback.h5")
     all_actions = data['actions'][()]  # (N, K, 9)
     delta_pos = all_actions[..., 0:3]  # (N, K, 3)
     delta_rot = all_actions[...,3:]
@@ -142,7 +142,7 @@ def run_env(cfg: DictConfig):
     ### Load Policy
     # ckpt_path = "../logs/automate/diffusion_policy_depth_relative_1012_dagger/policy_epoch_300.ckpt"  # or policy_last.ckpt
     # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/finetune_diffusion_policy/00345_policy_epoch_100.ckpt"  # or policy_last.ckpt
-    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward_0320/policy_epoch_200.ckpt"  # or policy_last.ckpt
+    ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward_20004/policy_epoch_199.ckpt"  # or policy_last.ckpt
     # ckpt_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/logs/automate/diffusion_policy_forward/policy_epoch_270.ckpt"  # or policy_last.ckpt
     policy = Diffusion_Policy(
         num_action=10,
@@ -174,7 +174,7 @@ def run_env(cfg: DictConfig):
         torch.set_printoptions(precision=5, sci_mode=False)
         rate = 2
         
-        for t in range(150):
+        for t in range(50):
             print("Timestep: ",t)
             fingertip_centered_pos=envs.fingertip_centered_pos.clone()
             fingertip_centered_quat=envs.fingertip_centered_quat.clone()
@@ -205,7 +205,8 @@ def run_env(cfg: DictConfig):
             envs.refresh_env_tensors()
             current_gripper_pos = envs.fingertip_centered_pos.clone()
             # Add the k steps together, and launch a move
-            for i in range(1):    
+            for i in range(10):    
+                if_log = True if i==0 else False   
                 tcp=torch.concatenate([next_tgt_pos,next_tgt_quat],axis=1).cpu().numpy()
                 proprioception=torch.from_numpy(xyz_rot_transform(tcp,from_rep="quaternion", to_rep="rotation_6d")).cuda()
                 delta_pos=predict_actions[:,i,:3] 
@@ -214,12 +215,6 @@ def run_env(cfg: DictConfig):
                 R_wc = camera3_vinv_torch[:, :3, :3] 
                 R_cw = R_wc.transpose(1, 2) 
                 delta_world = torch.matmul(R_cw,delta_pos.unsqueeze(-1)).squeeze(-1)
-                # delta_world = delta_pos
-                # import pdb;pdb.set_trace()
-                # First test with freeze height
-                # delta_pos[:,2] = 0
-                # delta_pos[:, 1] = delta_pos[:, 1] 
-                # delta_pos[:, 0] = delta_pos[:, 0] 
                 delta_rot6d=predict_actions[:,i,3:]
                 curr_rot6d=proprioception[:,3:]
                 next_rot6d=curr_rot6d + delta_rot6d
@@ -227,46 +222,19 @@ def run_env(cfg: DictConfig):
                 next_tgt_pose=torch.from_numpy(xyz_rot_transform(next_tcp,from_rep="rotation_6d",to_rep="quaternion")).cuda()
                 next_tgt_pos=next_tgt_pose[:,:3]
                 next_tgt_quat=next_tgt_pose[:,3:]
+                next_tgt_pos=next_tgt_pose[:,:3].clone()
+                next_tgt_quat=next_tgt_pose[:,3:].clone()
 
-            # Measuring the deviation        
-            init_plug_pos_2d = init_plug_pos.clone()
-            plug_pos_2d = envs.plug_pos.clone()
-            init_plug_pos_2d[:, 2] = 0
-            plug_pos_2d[:, 2] = 0
-            # raw delta
-            deviation = init_plug_pos_2d - plug_pos_2d
-            print("Deviation: ", deviation[5])
-            # deviation_norm = torch.norm(deviation, dim=1, keepdim=True) + 1e-8
-            # # condition mask: True → use raw action
-            # mask_raw = deviation_norm < 0.0001
-
-            next_tgt_pose[:,3:] = envs.fingertip_centered_quat.clone()
-            next_tgt_pos=next_tgt_pose[:,:3].clone()
-            delta_pos = next_tgt_pos - current_gripper_pos   # [num_envs, 3]
-            # delta_z=delta_pos[:,2].clone()
-            # delta_pos[:,2]=0
-            # delta_z[:] = -0.0008
-            # delta_norm = torch.norm(delta_pos, dim=1, keepdim=True) + 1e-8  # avoid div by 0
-            # target_length = 0.002 * (3 ** 0.5)
-            # delta_pos = delta_pos / delta_norm * target_length
-            # choose: raw when very small, normalized otherwise
-            # delta_pos = torch.where(mask_raw, delta_pos, delta_pos_normalized)
-            # delta_pos[:,2] = -0.0002
-            # print(delta_z)
-            next_tgt_pos=current_gripper_pos + delta_pos
-            
-            next_tgt_quat=envs.fingertip_centered_quat.clone()
-            current_pos = envs.fingertip_centered_pos.clone()
-            envs._move_gripper_to_eef_pose(env_ids, 
-                                                ctrl_tgt_pos=next_tgt_pos, 
-                                                ctrl_tgt_quat=next_tgt_quat, 
-                                                sim_steps=10, 
-                                                if_log=True, 
-                                                close_gripper=True,
-                                                log_freq=10,
-                                                log_extra=True,
-                                                log_first_only = True
-                                                )
+                envs._move_gripper_to_eef_pose(env_ids, 
+                                                    ctrl_tgt_pos=next_tgt_pos, 
+                                                    ctrl_tgt_quat=next_tgt_quat, 
+                                                    sim_steps=10, 
+                                                    if_log=if_log, 
+                                                    close_gripper=True,
+                                                    log_freq=10,
+                                                    log_extra=True,
+                                                    log_first_only = True
+                                                    )
         # Visualize
         # for env_id in range(12):
         #     envs.save_first_env_images(out_dir="rollout", index=env_id, reverse=False)
