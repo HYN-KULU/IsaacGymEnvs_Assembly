@@ -1,8 +1,8 @@
 from PIL import Image
 
 # input and output paths
-input_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/task_40009_traj_0_orig_plug_rgb.png"
-output_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/task_40009_traj_0_orig_plug_rgb_flipped.png"
+input_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/task_20031_traj_0_orig_plug_depth.png"
+output_path = "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/task_20031_traj_0_orig_plug_depth_flipped.png"
 
 # open image
 img = Image.open(input_path)

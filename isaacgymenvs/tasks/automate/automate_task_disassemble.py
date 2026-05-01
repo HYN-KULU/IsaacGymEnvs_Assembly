@@ -368,8 +368,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.camera_handles = []
         # Shared base properties
         cam_props = gymapi.CameraProperties()
-        cam_props.width = 640 * 2   # your new resolution
-        cam_props.height = 480 * 2
+        cam_props.width = 640   # your new resolution
+        cam_props.height = 480
         # cam_props.width = 640   # your new resolution
         # cam_props.height = 480
         cam_props.enable_tensors = True
@@ -1535,7 +1535,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
         self.init_vinv_array = np.stack(vinv_list)
         self.init_point_list = []
         # workspaces = self.generate_env_workspaces(num_envs = 12, num_per_row=3, env_spacing=0.5)
-        
+        num_envs = len(self.env_ptrs)
+        valid_pcd_mask = np.zeros(num_envs, dtype=bool)
         for env_id in range(len(self.env_ptrs)):
             points_list=[]
             try:
@@ -1570,9 +1571,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                                 points_list.append(points.clone())
                 points=torch.concatenate(points_list,dim=0)
             except Exception as e:
+                valid_pcd_mask[env_id] = False
                 print(f"Error processing env_id {env_id}: {e}")
                 continue
             if points.shape[0] == 0:
+                valid_pcd_mask[env_id] = False
                 print(f"No valid points for env_id {env_id}")
                 continue
             print("before downsample: ",points.shape)
@@ -1584,6 +1587,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             rgb = (vox_points[:, 3:6] * 255).astype(int)
             colors = [f'rgb({r},{g},{b})' for r, g, b in rgb]
             visualize_pcd = False
+            valid_pcd_mask[env_id] = True
             if visualize_pcd:
                 fig = go.Figure(data=[go.Scatter3d(
                     x=x,
@@ -1614,9 +1618,11 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             final_mask = no_intersect_mask & valid_mask_np 
         else:
             final_mask = no_intersect_mask & valid_mask_np & height_mask & dist_mask
+        final_mask = final_mask & valid_pcd_mask
         print(no_intersect_mask)
         print(valid_mask_np)
         print(height_mask)
+        print(valid_pcd_mask)
         self.success_env_ids = np.argwhere(final_mask).reshape(-1)
         print(self.success_env_ids)
 
@@ -1842,7 +1848,7 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
             log_filename = os.path.join(
                 os.getcwd(), 
                 self.cfg_task.env.data_dir, 
-                "flow_0416_forward_force_photo", self.cfg_task.env.desired_subassemblies[0],
+                "flow_0429_forward_force_photo_force_feedback", self.cfg_task.env.desired_subassemblies[0],
                 f"disassembly_traj_{self.run_id}.h5"
             )
             log_dir = os.path.dirname(log_filename)
@@ -1889,16 +1895,18 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 grp = f.create_group("init_point_list")
                 # for i, pc in enumerate(self.init_point_list):
                 pt_idx = 0
-                for i in success_env_ids:
-                    idx = i.item()
-                    pc = self.init_point_list[idx]
+                for i in range(len(success_env_ids)):
+                    print(i)
+                    print(success_env_ids)
+                    print(len(self.init_point_list))
+                    pc = self.init_point_list[i]
                     if torch.is_tensor(pc):
                         pc = pc.detach().cpu().numpy()
                     else:
                         pc = np.asarray(pc)
 
                     grp.create_dataset(
-                        f"{pt_idx}",
+                        f"{i}",
                         data=pc.astype(np.float32),
                         compression="gzip",
                         compression_opts=4,
@@ -1914,8 +1922,8 @@ class AutoMateTaskDisassemble(AutoMateEnv, FactoryABCTask):
                 f.create_dataset("init_socket_photo_top_rgb", data=self.init_socket_photo_top_rgb[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("init_socket_photo_top_depth", data=self.init_socket_photo_top_depth[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 cam3_depth = np.stack(self.camera3_depth_traj, axis=0).astype(np.float32)[:,success_env_ids_torch,...]
-                cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
-                cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids.detach().cpu().numpy(),...]
+                cam3_vinv= np.stack(self.camera3_vinv_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
+                cam3_proj= np.stack(self.camera3_proj_traj, axis=0).astype(np.float32)[:,success_env_ids,...]
                 # f.create_dataset("init_vinv_array", data=self.init_vinv_array[success_env_ids_torch,...].astype(np.float32), compression="gzip", compression_opts=4, chunks=True)
                 # f.create_dataset("init_mask_array", data=self.init_mask_array[success_env_ids_torch,...].astype(np.uint8), compression="gzip", compression_opts=4, chunks=True)
                 f.create_dataset("camera3_vinv", data=cam3_vinv, compression="gzip", compression_opts=4, chunks=True)

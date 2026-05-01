@@ -10,7 +10,7 @@ import argparse
 def run_task(task_id, hdf_id):
     print(f"[START] task {task_id}, hdf_id {hdf_id}")
     subprocess.run(
-        ["python", "preprocess_data_depth_multitask_forward_image_condition.py", "--task_id", task_id, "--hdf_id", str(hdf_id)],
+        ["python", "/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess_data_depth_multitask_forward_image_condition.py", "--task_id", task_id, "--hdf_id", str(hdf_id)],
         check=True
     )
     print(f"[DONE] task {task_id}, hdf_id {hdf_id}")
@@ -22,9 +22,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="", required = False)
     args=parser.parse_args()
     train_tasks = [
-        "20004"
+        "20031"
     ]
-    #train_tasks = ["00004"]
     print(f"[INFO] Training tasks: {len(train_tasks)}")
     print(f"[INFO] Training task IDs: {train_tasks}")
 

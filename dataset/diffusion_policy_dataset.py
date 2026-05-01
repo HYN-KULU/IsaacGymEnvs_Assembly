@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 
 class DepthActionDataset(Dataset):
-    def __init__(self, hdf5_file, transform=None, normalize=True, scale_to_unit=True, hdf5_file_action_normalize="/home/ubuntu/automate/IsaacGymEnvs_Assembly/utils/preprocess/processed_dataset_forward_0320.h5"):
+    def __init__(self, hdf5_file, transform=None, normalize=True, scale_to_unit=True, hdf5_file_action_normalize="/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/processed_dataset_forward_0421_force_feedback.h5"):
         """
         Args:
             hdf5_file (str): Path to processed_dataset.h5
@@ -23,15 +23,15 @@ class DepthActionDataset(Dataset):
         self.actions_normalize = self.h5_action_normalize["actions"]
 
         self.length = self.actions_normalize.shape[0]
-        self.index = np.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy/diffusion_policy_index.npy", mmap_mode = "r").copy()
+        self.index = np.load("/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy/diffusion_policy_index_0421.npy", mmap_mode = "r").copy()
         # self.data=[]
         self.data = np.empty((len(self.index), 180, 240), dtype=np.float16)
         count=0
-        for (task_id, depth_id) in self.index:
-            self.data[count] = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_multitask_0322/asset_{task_id:05d}/depth_{depth_id}.npz",allow_pickle=False)["depth"].astype(np.float16)
-            count+=1
-            if count%1000==0:
-                print(f"Loaded {count}/{len(self.index)} depth maps into memory")
+        # for (task_id, depth_id) in self.index:
+        #     self.data[count] = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_multitask_0322/asset_{task_id:05d}/depth_{depth_id}.npz",allow_pickle=False)["depth"].astype(np.float16)
+        #     count+=1
+        #     if count%1000==0:
+        #         print(f"Loaded {count}/{len(self.index)} depth maps into memory")
         if self.normalize:
             # compute min/max for delta_pos only (first 3 dims)
             all_actions = self.actions_normalize[()]  # (N, K, 9)
@@ -51,14 +51,12 @@ class DepthActionDataset(Dataset):
         
 
     def __len__(self):
-        # return len(self.index) 
-        return 1393
+        return len(self.index) 
 
     def __getitem__(self, idx):
         # depth (H, W) -> (1, H, W) 
-        # task_id, depth_id = self.index[idx]
-        # data = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy/asset_{task_id:05d}/depth_{depth_id}.npz",allow_pickle=False)
-        # depth = data["depth"].copy()
+        task_id, hdf_id, depth_id = self.index[idx]
+        data = np.load(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_force_image/asset_{task_id:05d}/hdf_{hdf_id}/depth_{depth_id}.npz",allow_pickle=False)
         depth = self.data[idx]
         depth = depth.astype(np.float32)
         depth = np.expand_dims(depth, axis=0)

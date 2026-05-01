@@ -490,13 +490,14 @@ if __name__=="__main__":
     for task_id in train_tasks:
         for hdf_id in range(6):
             data = read_from_hdf5(
-                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
+                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo_force_feedback/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
             )
             env_id = 1
             depth = data["init_socket_photo_depth"][env_id]   # (960, 1280)
             rgb = data["init_socket_photo_rgb"][env_id]       # (960, 1280, 3)
             cam_proj = data["camera3_proj"][0][env_id]        # (4, 4) # 350 12 4 4
             cam_proj = torch.from_numpy(cam_proj).float().to("cuda")
+            # import pdb;pdb.set_trace()
             orig_rgb_path = f"./task_{task_id}_traj_{hdf_id}_orig_rgb.png"
             save_rgb_image(rgb, orig_rgb_path)
             save_rgb_image(data["init_socket_photo_top_rgb"][env_id], f"./task_{task_id}_traj_{hdf_id}_orig_top_rgb.png")
@@ -514,13 +515,13 @@ if __name__=="__main__":
             )
             points=torch.from_numpy(points).float().to("cpu")
             q_init = data["fingertip_centered_quat"][env_id,0]
-            rgb_init, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H=480, W=640, camera_height_offset=0.08, fov_deg=30, point_radius=3)
-            for t in [0,-1]:
+            rgb_init, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H=480, W=640, camera_height_offset=0.02, fov_deg=73.73979365244269, point_radius=5)
+            for t in range(data["fingertip_centered_quat"].shape[1]):
                 if t ==0:
                     rgb_img = rgb_init.clone().detach().cpu().numpy()
                     depth_img = depth_init.clone().detach().cpu().numpy()
                 else:
-                    q_final = data["fingertip_centered_quat"][env_id,-1]
+                    q_final = data["fingertip_centered_quat"][env_id,t]
                     # import pdb;pdb.set_trace()
                     # R_yaw, R_inv, yaw = get_inverse_yaw_only_rotation(q_init, q_final)
                     # socket_center = points[:,:3].mean(dim=0)
