@@ -481,16 +481,16 @@ def rotate_socket_depth_opposite_gripper(
 
 if __name__=="__main__":
     train_tasks = [
-       "20031"
+       "100003"
     ]
     hdf_ids = 0
     timestep_index = {}
     force_list = []
 
     for task_id in train_tasks:
-        for hdf_id in range(6):
+        for hdf_id in range(1):
             data = read_from_hdf5(
-                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo_force_feedback/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
+                f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/sim2real_0513/asset_{task_id}/disassembly_traj_{hdf_id}.h5"
             )
             env_id = 1
             depth = data["init_socket_photo_depth"][env_id]   # (960, 1280)

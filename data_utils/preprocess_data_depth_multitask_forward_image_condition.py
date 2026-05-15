@@ -5,7 +5,7 @@ import cv2
 from collections import OrderedDict
 from data_utils.socket_image import rotate_socket_image_opposite_gripper, relative_yaw_from_quats,quat_xyzw_to_yaw, rotate_socket_depth_opposite_gripper
 from data_utils.pointcloud_rgbd import render_top_down_custom
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 def visualize_depth(
     depth,
@@ -216,11 +216,12 @@ if __name__=="__main__":
     action_list=[]
     depth_id=0
     K=10
-    with open('/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/timestep_index_0429_force_feedback.pkl', 'rb') as f:
+    with open('/home/ubuntu/automate/IsaacGymEnvs_Assembly/data_utils/preprocess/timestep_index_40069.pkl', 'rb') as f:
         timestep_index = pickle.load(f)
     for hdf_id in [hdf_id]:
         try:
-            data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0416_forward_force_photo_force_feedback/asset_{task_id}/disassembly_traj_{hdf_id}.h5")      
+            # data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/recovery_0501_20031/asset_{task_id}/disassembly_traj_{hdf_id}.h5")      
+            data=read_from_hdf5(f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/isaacgymenvs/tasks/automate/data/flow_0429_forward_force_photo_force_feedback/asset_{task_id}/disassembly_traj_{hdf_id}.h5")      
         except Exception as e:
             continue
         if data["fingertip_centered_pos"].shape[0]==0:
@@ -237,7 +238,7 @@ if __name__=="__main__":
                 print(f"Missing timestep index for task {task_id}, hdf_id {hdf_id}, index {i}")
                 continue
             q_init = data["fingertip_centered_quat"][i,0]
-            points= torch.from_numpy(data["init_point_list"][i]).float().to("cuda")
+            points= torch.from_numpy(data["init_point_list"][i]).float()
             _, depth_init = render_top_down_custom(points[:,:3], points[:,3:], H=depth_data.shape[2], W=depth_data.shape[3], camera_height_offset=0.02, fov_deg=73.73979365244269, point_radius=5)
             init_plug_photo_depth = np.flipud(data["init_plug_photo_depth"][i])
             distance_camera_to_plug = abs(init_plug_photo_depth.max())
@@ -253,7 +254,7 @@ if __name__=="__main__":
                     socket_depth,_ = rotate_socket_depth_opposite_gripper(depth_init, q_init, q_final, invalid_val=0.0)
                 depth = depth_data[step][i].copy()  # (480, 640)
                 socket_depth = normalize_depth_for_shape(socket_depth, invalid_fill=0.0)
-                out_dir = f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_force_image_condition/asset_{task_id}/hdf_{hdf_id}"
+                out_dir = f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/data/diffusion_policy_force_image_condition_0501/asset_{task_id}/hdf_{hdf_id}"
                 os.makedirs(out_dir, exist_ok=True)
                 np.savez(
                     f"{out_dir}/depth_{depth_id}.npz",

@@ -346,7 +346,7 @@ def ring_coords(poly):
 
 
 def make_circle(center=(0.0, 0.0), radius=1.0):
-    return Point(center[0], center[1]).buffer(radius, resolution=128)
+    return Point(center[0], center[1]).buffer(radius, resolution=16)
 
 
 def make_square(center=(0.0, 0.0), half_size=1.0):
@@ -361,7 +361,7 @@ def make_rectangle(center=(0.0, 0.0), hx=1.0, hy=0.5):
 
 def make_ellipse(center=(0.0, 0.0), rx=1.0, ry=0.7):
     cx, cy = center
-    unit = Point(cx, cy).buffer(1.0, resolution=128)
+    unit = Point(cx, cy).buffer(1.0, resolution=16)
     return scale(unit, xfact=rx, yfact=ry, origin=(cx, cy))
 
 
@@ -374,7 +374,7 @@ def make_rounded_square(center=(0.0, 0.0), half_size=1.0, radius=0.25):
         cx + (half_size - radius),
         cy + (half_size - radius),
     )
-    return fix_geom(core.buffer(radius, resolution=128))
+    return fix_geom(core.buffer(radius, resolution=16))
 
 
 def make_rounded_rectangle(center=(0.0, 0.0), hx=1.0, hy=0.6, radius=0.2):
@@ -386,7 +386,7 @@ def make_rounded_rectangle(center=(0.0, 0.0), hx=1.0, hy=0.6, radius=0.2):
         cx + (hx - radius),
         cy + (hy - radius),
     )
-    return fix_geom(core.buffer(radius, resolution=128))
+    return fix_geom(core.buffer(radius, resolution=16))
 
 
 def clean_socket_hole_profile(profile, smooth_radius=0.00030, simplify_tol=0.00008):
@@ -397,8 +397,8 @@ def clean_socket_hole_profile(profile, smooth_radius=0.00030, simplify_tol=0.000
     g = get_main_polygon(profile)
 
     if smooth_radius > 0:
-        g = fix_geom(g.buffer(smooth_radius, resolution=128))
-        g = fix_geom(g.buffer(-smooth_radius, resolution=128))
+        g = fix_geom(g.buffer(smooth_radius, resolution=16))
+        g = fix_geom(g.buffer(-smooth_radius, resolution=16))
         g = get_main_polygon(g)
 
     if simplify_tol > 0:
@@ -414,7 +414,7 @@ def make_socket_outer_from_inner(inner_profile, wall_thickness=0.004, outer_marg
     """
     Build the socket outer wall from the inner cavity profile.
     """
-    outer_profile = fix_geom(inner_profile.buffer(wall_thickness + outer_margin, resolution=128))
+    outer_profile = fix_geom(inner_profile.buffer(wall_thickness + outer_margin, resolution=16))
     outer_profile = get_main_polygon(outer_profile)
     return outer_profile
 
@@ -426,7 +426,7 @@ def sample_primitive(kind=None, center=(0.0, 0.0), size_scale=1.0):
     if kind is None:
         kind = np.random.choice(
             ["circle", "ellipse", "square", "rounded_square", "rectangle", "rounded_rectangle"],
-            p=[0.22, 0.18, 0.12, 0.15, 0.15, 0.18]
+            p=[0.1, 0.15, 0.1, 0.15, 0.25, 0.25]
         )
 
     cx, cy = center
@@ -673,7 +673,7 @@ def is_good_shape(geom, min_convexity=0.55, max_aspect=3.6, min_area=0.20):
 def postprocess_shape(geom):
     if np.random.rand() < 0.40:
         eps = np.random.uniform(0.015, 0.045)
-        geom = geom.buffer(eps, resolution=128).buffer(-eps, resolution=128)
+        geom = geom.buffer(eps, resolution=16).buffer(-eps, resolution=16)
 
     if np.random.rand() < 0.35:
         sx = np.random.uniform(0.90, 1.15)
@@ -701,7 +701,7 @@ def normalize_shape_to_bbox(geom, target_extent=0.010):
 def sample_shape_raw():
     layout = np.random.choice(
         ["three_part_nonsymmetric", "two_part_nonsymmetric", "single", "clover4"],
-        p=[0.60, 0.25, 0.05, 0.10]
+        p=[0.25,0.4,0.2,0.15]
     )
 
     if layout == "three_part_nonsymmetric":
@@ -807,81 +807,247 @@ def build_annulus_2d_mesh_triangle(
     return mesh2d, outer_segments, inner_segments, outer_xy, inner_xy
 
 
+# def extrude_annulus_socket(
+#     mesh2d,
+#     outer_segments,
+#     inner_segments,
+#     cavity_depth,
+#     socket_height,
+# ):
+#     """
+#     Build a true socket:
+#     - top surface ring at z = socket_height
+#     - cavity walls from z = socket_height down to z = socket_height - cavity_depth
+#     - closed bottom floor under the cavity
+#     - outer walls around the whole socket height
+#     - bottom surface
+
+#     Coordinate convention:
+#     z in [0, socket_height]
+#     top opening at z = socket_height
+#     """
+#     if cavity_depth <= 0 or cavity_depth > socket_height:
+#         raise ValueError("cavity_depth must be in (0, socket_height].")
+
+#     v2 = mesh2d["vertices"]
+#     t2 = mesh2d["triangles"]
+#     n = len(v2)
+
+#     z_bottom = 0.0
+#     z_cavity_floor = socket_height - cavity_depth
+#     z_top = socket_height
+
+#     vb = np.column_stack([v2, np.full(n, z_bottom)])
+#     vf = np.column_stack([v2, np.full(n, z_cavity_floor)])
+#     vt = np.column_stack([v2, np.full(n, z_top)])
+
+#     vertices3d = np.vstack([vb, vf, vt])
+
+#     idx_b = 0
+#     idx_f = n
+#     idx_t = 2 * n
+
+#     faces = []
+
+#     # Bottom surface: full annulus at z_bottom
+#     for tri in t2:
+#         faces.append([tri[0] + idx_b, tri[2] + idx_b, tri[1] + idx_b])
+
+#     # Cavity floor: full annulus at z_cavity_floor
+#     # This creates the "bottom" of the socket material under the hole ring.
+#     for tri in t2:
+#         faces.append([tri[0] + idx_f, tri[1] + idx_f, tri[2] + idx_f])
+
+#     # Top surface: only outer wall ring should exist, not across the hole.
+#     # Reuse annulus triangles at z_top.
+#     for tri in t2:
+#         faces.append([tri[0] + idx_t, tri[1] + idx_t, tri[2] + idx_t])
+
+#     # Outer walls: full height z_bottom -> z_top
+#     for a, b in outer_segments:
+#         faces.append([a + idx_b, b + idx_b, b + idx_t])
+#         faces.append([a + idx_b, b + idx_t, a + idx_t])
+
+#     # Inner cavity walls: only from cavity floor -> top
+#     for a, b in inner_segments:
+#         faces.append([a + idx_f, b + idx_t, b + idx_f])
+#         faces.append([a + idx_f, a + idx_t, b + idx_t])
+
+#     faces = np.asarray(faces, dtype=np.int64)
+
+#     mesh3d = trimesh.Trimesh(vertices=vertices3d, faces=faces, process=True)
+#     mesh3d.remove_duplicate_faces()
+#     mesh3d.remove_degenerate_faces()
+#     mesh3d.remove_unreferenced_vertices()
+#     mesh3d.fix_normals()
+#     return mesh3d
+
+def build_filled_2d_mesh_triangle(profile, max_area=None):
+    """
+    Triangulate a filled polygon, no hole.
+    """
+    xy = ring_coords(profile)
+    xy = ensure_ccw(xy)
+
+    segments = segments_from_ring(0, len(xy))
+
+    A = {
+        "vertices": xy,
+        "segments": segments,
+    }
+
+    if max_area is None:
+        mesh2d = tr.triangulate(A, "pq")
+    else:
+        mesh2d = tr.triangulate(A, f"pqa{max_area}")
+
+    if "triangles" not in mesh2d or len(mesh2d["triangles"]) == 0:
+        raise RuntimeError("triangle failed to generate filled 2D mesh.")
+
+    return mesh2d
+
+
 def extrude_annulus_socket(
     mesh2d,
     outer_segments,
     inner_segments,
     cavity_depth,
     socket_height,
+    outer_profile=None,
+    inner_profile=None,
+    triangle_max_area=None,
 ):
     """
-    Build a true socket:
-    - top surface ring at z = socket_height
-    - cavity walls from z = socket_height down to z = socket_height - cavity_depth
-    - closed bottom floor under the cavity
-    - outer walls around the whole socket height
-    - bottom surface
+    Build a true printable socket:
+
+    - top surface: annulus, outer minus inner hole
+    - outer wall: full height
+    - inner wall: cavity floor to top
+    - cavity floor: filled inner profile
+    - bottom: filled outer profile
 
     Coordinate convention:
-    z in [0, socket_height]
-    top opening at z = socket_height
+        z in [0, socket_height]
+        top opening at z = socket_height
     """
     if cavity_depth <= 0 or cavity_depth > socket_height:
         raise ValueError("cavity_depth must be in (0, socket_height].")
 
-    v2 = mesh2d["vertices"]
-    t2 = mesh2d["triangles"]
-    n = len(v2)
+    if outer_profile is None or inner_profile is None:
+        raise ValueError("Need outer_profile and inner_profile to close bottom/floor.")
+
+    v_ann = mesh2d["vertices"]
+    t_ann = mesh2d["triangles"]
+    n_ann = len(v_ann)
 
     z_bottom = 0.0
     z_cavity_floor = socket_height - cavity_depth
     z_top = socket_height
 
-    vb = np.column_stack([v2, np.full(n, z_bottom)])
-    vf = np.column_stack([v2, np.full(n, z_cavity_floor)])
-    vt = np.column_stack([v2, np.full(n, z_top)])
-
-    vertices3d = np.vstack([vb, vf, vt])
-
-    idx_b = 0
-    idx_f = n
-    idx_t = 2 * n
-
+    vertices_all = []
     faces = []
 
-    # Bottom surface: full annulus at z_bottom
-    for tri in t2:
-        faces.append([tri[0] + idx_b, tri[2] + idx_b, tri[1] + idx_b])
+    # ============================================================
+    # 1. Annulus vertices at top
+    # ============================================================
+    idx_top = len(vertices_all)
+    vt = np.column_stack([v_ann, np.full(n_ann, z_top)])
+    vertices_all.append(vt)
 
-    # Cavity floor: full annulus at z_cavity_floor
-    # This creates the "bottom" of the socket material under the hole ring.
-    for tri in t2:
-        faces.append([tri[0] + idx_f, tri[1] + idx_f, tri[2] + idx_f])
+    # Top annulus surface
+    for tri in t_ann:
+        faces.append([
+            idx_top + tri[0],
+            idx_top + tri[1],
+            idx_top + tri[2],
+        ])
 
-    # Top surface: only outer wall ring should exist, not across the hole.
-    # Reuse annulus triangles at z_top.
-    for tri in t2:
-        faces.append([tri[0] + idx_t, tri[1] + idx_t, tri[2] + idx_t])
+    # ============================================================
+    # 2. Annulus vertices at cavity floor
+    #    Used only for inner wall connection.
+    # ============================================================
+    idx_floor_ann = idx_top + n_ann
+    vf_ann = np.column_stack([v_ann, np.full(n_ann, z_cavity_floor)])
+    vertices_all.append(vf_ann)
 
-    # Outer walls: full height z_bottom -> z_top
-    for a, b in outer_segments:
-        faces.append([a + idx_b, b + idx_b, b + idx_t])
-        faces.append([a + idx_b, b + idx_t, a + idx_t])
-
-    # Inner cavity walls: only from cavity floor -> top
+    # Inner cavity wall: from cavity floor to top
     for a, b in inner_segments:
-        faces.append([a + idx_f, b + idx_t, b + idx_f])
-        faces.append([a + idx_f, a + idx_t, b + idx_t])
+        faces.append([idx_floor_ann + a, idx_floor_ann + b, idx_top + b])
+        faces.append([idx_floor_ann + a, idx_top + b, idx_top + a])
 
+    # ============================================================
+    # 3. Outer wall needs bottom and top outer ring
+    # ============================================================
+    idx_bottom_ann = idx_floor_ann + n_ann
+    vb_ann = np.column_stack([v_ann, np.full(n_ann, z_bottom)])
+    vertices_all.append(vb_ann)
+
+    # Outer walls: bottom to top
+    for a, b in outer_segments:
+        faces.append([idx_bottom_ann + a, idx_bottom_ann + b, idx_top + b])
+        faces.append([idx_bottom_ann + a, idx_top + b, idx_top + a])
+
+    # ============================================================
+    # 4. Bottom surface: filled outer profile
+    # ============================================================
+    outer_mesh2d = build_filled_2d_mesh_triangle(
+        outer_profile,
+        max_area=triangle_max_area,
+    )
+
+    v_outer = outer_mesh2d["vertices"]
+    t_outer = outer_mesh2d["triangles"]
+
+    idx_outer_bottom = idx_bottom_ann + n_ann
+    vb_outer = np.column_stack([v_outer, np.full(len(v_outer), z_bottom)])
+    vertices_all.append(vb_outer)
+
+    # Bottom face should point downward, so reverse winding
+    for tri in t_outer:
+        faces.append([
+            idx_outer_bottom + tri[0],
+            idx_outer_bottom + tri[2],
+            idx_outer_bottom + tri[1],
+        ])
+
+    # ============================================================
+    # 5. Cavity floor: filled inner profile
+    # ============================================================
+    inner_mesh2d = build_filled_2d_mesh_triangle(
+        inner_profile,
+        max_area=triangle_max_area,
+    )
+
+    v_inner = inner_mesh2d["vertices"]
+    t_inner = inner_mesh2d["triangles"]
+
+    idx_inner_floor = idx_outer_bottom + len(v_outer)
+    vf_inner = np.column_stack([v_inner, np.full(len(v_inner), z_cavity_floor)])
+    vertices_all.append(vf_inner)
+
+    # Cavity floor should point upward
+    for tri in t_inner:
+        faces.append([
+            idx_inner_floor + tri[0],
+            idx_inner_floor + tri[1],
+            idx_inner_floor + tri[2],
+        ])
+
+    # ============================================================
+    # Final mesh cleanup
+    # ============================================================
+    vertices3d = np.vstack(vertices_all)
     faces = np.asarray(faces, dtype=np.int64)
 
     mesh3d = trimesh.Trimesh(vertices=vertices3d, faces=faces, process=True)
-    mesh3d.remove_duplicate_faces()
+
+    mesh3d.update_faces(mesh3d.unique_faces())
     mesh3d.remove_degenerate_faces()
     mesh3d.remove_unreferenced_vertices()
+    mesh3d.merge_vertices()
     mesh3d.fix_normals()
-    return mesh3d
 
+    return mesh3d
 
 # ============================================================
 # Plug / socket generation
@@ -889,7 +1055,7 @@ def extrude_annulus_socket(
 def create_plug_with_grasp_post(
     profile,
     insertion_height=0.030,
-    grasp_post_height=0.035,
+    grasp_post_height=0.1,
     grasp_post_radius=0.004,
     post_blend_height=0.004,
 ):
@@ -931,7 +1097,7 @@ def create_plug_with_grasp_post(
 
 def create_socket_from_profile(
     profile,
-    socket_height=0.035,
+    socket_height=0.05,
     clearance=0.0006,
     wall_thickness=0.004,
     entrance_relief=0.0005,   # kept for metadata compatibility; not used in this simpler version
@@ -962,7 +1128,7 @@ def create_socket_from_profile(
     clean_profile = profile
 
     hole_profile = get_main_polygon(
-        fix_geom(clean_profile.buffer(clearance, resolution=128))
+        fix_geom(clean_profile.buffer(clearance, resolution=16))
     )
 
     outer_profile = make_socket_outer_from_inner(
@@ -987,12 +1153,22 @@ def create_socket_from_profile(
 
     cavity_depth = min(max(entrance_depth, 1e-5), socket_height)
 
+    # socket_mesh = extrude_annulus_socket(
+    #     mesh2d=mesh2d,
+    #     outer_segments=outer_segments,
+    #     inner_segments=inner_segments,
+    #     cavity_depth=cavity_depth,
+    #     socket_height=socket_height,
+    # )
     socket_mesh = extrude_annulus_socket(
         mesh2d=mesh2d,
         outer_segments=outer_segments,
         inner_segments=inner_segments,
         cavity_depth=cavity_depth,
         socket_height=socket_height,
+        outer_profile=outer_profile,
+        inner_profile=hole_profile,
+        triangle_max_area=triangle_max_area,
     )
 
     meta = {
@@ -1037,6 +1213,21 @@ def write_mat_plug(path):
         f.write("Ka 0.2 0.0 0.0\n")        # ambient (dark red)
         f.write("Kd 1.0 0.0 0.0\n")        # diffuse (red)
         f.write("illum 1\n")
+
+# def write_mat_socket(path):
+#     with open(path, "w") as f:
+#         f.write("newmtl mat0\n")
+#         f.write("Ka 0.0 0.0 0.0\n")   # ambient
+#         f.write("Kd 0.0 0.0 0.0\n")   # diffuse
+#         f.write("illum 1\n")
+
+
+# def write_mat_plug(path):
+#     with open(path, "w") as f:
+#         f.write("newmtl mat0\n")
+#         f.write("Ka 0.0 0.0 0.0\n")   # ambient
+#         f.write("Kd 0.0 0.0 0.0\n")   # diffuse
+#         f.write("illum 1\n")
 
 def attach_material(obj_path, mtl):
     with open(obj_path, "r") as f:
@@ -1108,6 +1299,7 @@ def save_asset_bundle(
     trim_extra_height=0.003,
     triangle_max_area=None,
     seed=None,
+    add_base_under_socket=False,
 ):
     """
     Same export format as before:
@@ -1146,6 +1338,43 @@ def save_asset_bundle(
         trim_extra_height=trim_extra_height,
         triangle_max_area=triangle_max_area,
     )
+    # ============================================================
+    # Add mounting base under socket
+    # ============================================================
+
+    base_size_x = 0.06
+    base_size_y = 0.06
+    base_height = 0.01
+
+    base_mesh = trimesh.creation.box(
+        extents=[base_size_x, base_size_y, base_height]
+    )
+
+    # Slight overlap for robust boolean
+    base_mesh.apply_translation([
+        0.0,
+        0.0,
+        -base_height / 2.0 + 0.0005
+    ])
+
+    # TRUE manifold union
+    socket_mesh = trimesh.boolean.union(
+        [
+            socket_mesh,
+            base_mesh
+        ],
+        engine="blender"
+    )
+
+    # Shift upward so z starts at 0
+    socket_mesh.apply_translation([
+        0.0,
+        0.0,
+        base_height
+    ])
+
+    socket_mesh.process(validate=True)
+    socket_mesh.fix_normals()
 
     plug_path = os.path.join(save_dir, "asset_plug.obj")
     socket_path = os.path.join(save_dir, "asset_socket.obj")
@@ -1227,13 +1456,30 @@ def visualize_profiles(profile, hole_profile=None, socket_profile=None, save_pat
 
 
 if __name__ == "__main__":
-    asset_ids = [f"{asset_id}" for asset_id in range(40001,40200)]
-    failist=[]
-    for asset_id in asset_ids:
+    asset_ids = [f"{asset_id}" for asset_id in range(100000, 100300)]
+
+failist = []
+
+for asset_id in asset_ids:
+
+    print(f"\nGenerating asset {asset_id}")
+
+    base_dir = (
+        f"/home/ubuntu/automate/"
+        f"IsaacGymEnvs_Assembly/assets/automate/mesh/{asset_id}"
+    )
+
+    success = False
+
+    base_seed = int(asset_id) * 2
+
+    for retry_idx in range(100):
+
+        seed = base_seed + retry_idx * 10000
 
         try:
-            print(asset_id)
-            base_dir = f"/home/ubuntu/automate/IsaacGymEnvs_Assembly/assets/automate/mesh/{asset_id}"
+
+            print(f"Trying seed {seed}")
 
             result = save_asset_bundle(
                 save_dir=base_dir,
@@ -1247,23 +1493,33 @@ if __name__ == "__main__":
                 clearance=0.0008,
                 wall_thickness=0.004,
                 entrance_relief=0.0005,
-                entrance_depth=0.030,   # cavity depth; set near insertion height if desired
+                entrance_depth=0.030,
                 outer_margin=0.0015,
                 socket_smooth_radius=0.00030,
                 socket_simplify_tol=0.00008,
                 trim_extra_height=0.003,
                 triangle_max_area=None,
-                seed=int(asset_id) * 2,
-                # seed=48910,
+                seed=seed,
+                add_base_under_socket=True,
             )
-
             visualize_profiles(
                 result["profile"],
                 hole_profile=result["hole_profile"],
                 socket_profile=result["socket_profile"],
                 save_path=os.path.join(base_dir, "profiles.png"),
             )
-        except:
-            print(f"Failed to generate asset {asset_id}.")
-            failist.append(asset_id)
-        print(failist)
+            print(
+                f"Successfully generated asset "
+                f"{asset_id} with seed {seed}"
+            )
+            success = True
+            break
+        except Exception as e:
+            print(
+                f"Seed {seed} failed "
+                f"for asset {asset_id}"
+            )
+            print(e)
+    if not success:
+        print(f"FAILED asset {asset_id}")
+        failist.append(asset_id)
